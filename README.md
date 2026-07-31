@@ -187,7 +187,8 @@ npx wrangler secret put NOTIFICATION_FROM_EMAIL --env=""
 
 Requirements:
 
-- Workers paid plan with **Browser Rendering** enabled
+- Cloudflare Workers account (Free can deploy; Paid recommended for Puppeteer CPU + higher Browser Rendering limits)
+- **Do not set `[limits].cpu_ms` on Free** — Cloudflare rejects it (`code: 100328`)
 - Schema applied in Supabase
 
 After first deploy, call `POST /api/admin/session/ensure` (or store credentials + refresh) before validate traffic.

@@ -6,11 +6,14 @@ account_id = "0c1359d755dc6714ead89c7c8e9eb9d1"
 
 # Browser Rendering — required for POST /api/admin/session/refresh (Puppeteer login).
 # Docs: https://developers.cloudflare.com/browser-run/puppeteer/
+# Free plan includes limited browser time; Paid unlocks higher limits.
 browser = { binding = "BROWSER" }
 
-# Puppeteer login can run 30–90s wall-clock; raise CPU budget on paid plans.
-[limits]
-cpu_ms = 300000
+# Do NOT set [limits].cpu_ms on Workers Free — deploy fails with code 100328.
+# After upgrading to Workers Paid, you can add:
+#   [limits]
+#   cpu_ms = 300000
+# so Puppeteer session refresh has enough CPU budget.
 
 # Production / Default environment variables
 [vars]
@@ -40,9 +43,6 @@ AMAZON_PROXY_BASE_URL = "https://www.amazonlogistics.eu"
 BUSINESS_DAY_START_HOUR_IST = "0"
 DATA_PROVIDER = "amazon"
 AMAZON_LOGIN_STATION_CODE = "TIRC"
-
-[env.staging.limits]
-cpu_ms = 300000
 
 # Staging Secrets (Set via 'wrangler secret put --env staging')
 # - SUPABASE_URL
