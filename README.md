@@ -53,8 +53,8 @@ instead of stopping.
     "total": 133072.0,
     "breakdown": { "500": 200, "200": 100 }  // optional, stored for audit only
   },
-  "auth": {
-    "cookie": "session-id=...; session-token=...; ...",   // forwarded from the authenticated portal session
+  "auth": {                          // OPTIONAL — omit to use the stored session (see "Session management" below)
+    "cookie": "session-id=...; session-token=...; ...",
     "xApiUsageKey": "scc-boson-api-...:...:..."
   },
   "overrides": {                     // optional — only send once you have a reason for a failed check
@@ -108,6 +108,66 @@ reason, and re-POSTs the same request with
 next call will re-run `pendingRecon` (now overridden and logged) and proceed
 to `remittanceMatch`, and so on.
 
+## Session management
+
+[#session-management](#session-management)
+
+The worker holds no long-lived Amazon credentials. Instead, the owner
+periodically copies a live session out of an authenticated browser tab and
+uploads it once; every `/api/validate` call reuses it until Amazon
+invalidates it, at which point the worker flags it and waits for a fresh
+upload. All endpoints in this section require an `x-admin-key` header
+matching the `ADMIN_API_KEY` secret.
+
+### `POST /api/admin/session`
+
+[#post-apiadminsession](#post-apiadminsession)
+```bash
+{
+"cookie": "session-id=...; session-token=...; ...",
+"xApiUsageKey": "scc-boson-api-...:...:...",
+"uploadedBy": "owner@yourcompany.com"
+}
+```
+
+Stores the session and supersedes whatever was active before it. The
+easiest way to produce this payload is `scripts/extract-session.console.js`
+— paste it into the DevTools console on the logged-in station-portal tab
+(after filling in the worker URL / admin key at the top) and click
+anything that reloads dashboard data; it captures the cookie and the
+`x-api-usage-key` header (which is computed client-side per request, not
+stored anywhere readable) and uploads them automatically.
+
+### `GET /api/admin/session/status`
+
+[#get-apiadminsessionstatus](#get-apiadminsessionstatus)
+
+Returns `{ status: "active" | "expired" | "none", uploadedBy, uploadedAt, expiredAt, cookiePreview, xApiUsageKeyPreview }`
+(cookie/key values are redacted to their last 6 characters).
+
+### `GET /api/admin/notifications?unacknowledged=true`
+
+[#get-apiadminnotifications](#get-apiadminnotifications)
+
+Returns recent owner-facing alerts (currently just `AMAZON_SESSION_EXPIRED`)
+for the dashboard to render. `POST /api/admin/notifications/:id/ack` marks
+one as read.
+
+### What happens when the session expires
+
+[#what-happens-when-the-session-expires](#what-happens-when-the-session-expires)
+
+If Amazon's proxy gateway responds `401`/`403` (unauthorized) **or `404`**
+(observed in practice once a session goes stale enough), the worker:
+
+1. Returns `401 AMAZON_SESSION_EXPIRED` to the frontend immediately, so the
+   in-progress validate call fails loudly rather than silently.
+2. Marks the stored session `expired` in `amazon_sessions`.
+3. Writes a `critical` row to `owner_notifications` (dashboard alert) and,
+   if `RESEND_API_KEY` + `OWNER_NOTIFICATION_EMAIL` are configured, sends an
+   email — see `src/notifications/factory.ts` to add another channel
+   (Slack webhook, SMS, etc.) without touching anything else.
+
 ### `GET /api/stations`
 Returns the allowlisted station codes this worker will accept.
 
@@ -128,12 +188,23 @@ npm run dev       # local dev via wrangler
 npm run typecheck
 ```
 
-Before deploying, set the two secrets (never put these in `wrangler.toml`):
+Before deploying, set these secrets (never put them in `wrangler.toml`):
 
 ```bash
 wrangler secret put SUPABASE_URL
 wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+wrangler secret put ADMIN_API_KEY            # generate with: openssl rand -hex 32
+
+# Optional — only needed if you want email alerts in addition to the
+# dashboard notification row when the Amazon session expires:
+wrangler secret put RESEND_API_KEY
+wrangler secret put OWNER_NOTIFICATION_EMAIL
+wrangler secret put NOTIFICATION_FROM_EMAIL
 ```
+
+After deploying, upload the first Amazon session (see "Session management"
+below) before hitting `/api/validate` — without one it returns
+`400 NO_STORED_SESSION`.
 
 ```bash
 npm run deploy
@@ -149,12 +220,19 @@ npm run deploy
 
 ## Known constraints / things to revisit
 
-- **Auth is session-based and per-user.** `auth.cookie` / `auth.xApiUsageKey`
-  come from an already-authenticated station-portal browser session and are
-  forwarded by your frontend on every request — the worker holds no
-  long-lived Amazon credentials of its own. Expect `AMAZON_SESSION_EXPIRED`
-  (401) responses once that session times out; surface that to the user as
-  "please refresh/re-login to the station portal."
+- **Auth is session-based, not a long-lived credential.** The worker holds
+  no Amazon credentials of its own — only whatever the owner last uploaded
+  via `POST /api/admin/session`. Expect `AMAZON_SESSION_EXPIRED` (401)
+  responses once that session times out (Amazon has also been observed
+  returning a bare `404` for a stale session, which is treated the same
+  way); when that happens the worker marks the stored session `expired`
+  and raises an `owner_notifications` alert (+ email if configured) rather
+  than requiring the frontend to detect it itself. Re-run
+  `scripts/extract-session.console.js` to recover.
+- **Admin routes are a shared secret, not per-user auth.** `x-admin-key`
+  is a single value shared by whoever manages sessions/notifications —
+  fine for one owner, but swap for real auth if more than one person needs
+  scoped access.
 - **Lock down CORS** in `src/index.ts` to your actual frontend origin(s)
   before shipping — it's wide open (`origin: '*'`) for now to make local
   integration easier.

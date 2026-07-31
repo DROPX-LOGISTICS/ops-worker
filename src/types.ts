@@ -7,6 +7,12 @@ export interface Env {
   DATA_PROVIDER: string;
   SUPABASE_URL: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
+  /** Shared secret the owner's frontend sends as `x-admin-key` to reach /api/admin/*. */
+  ADMIN_API_KEY: string;
+  /** Optional — enables email delivery (via Resend) alongside the dashboard notification row. */
+  RESEND_API_KEY?: string;
+  OWNER_NOTIFICATION_EMAIL?: string;
+  NOTIFICATION_FROM_EMAIL?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +95,39 @@ export interface AmazonAuthContext {
   xApiUsageKey: string;
 }
 
+// ---------------------------------------------------------------------------
+// Stored Amazon session (uploaded by the owner, reused across requests)
+// ---------------------------------------------------------------------------
+export type SessionStatus = 'active' | 'expired';
+
+export interface StoredCredential {
+  id: string;
+  cookie: string;
+  xApiUsageKey: string;
+  uploadedBy: string;
+  uploadedAt: string;
+  status: SessionStatus;
+  expiredAt?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Owner notifications (session expiry, etc.)
+// ---------------------------------------------------------------------------
+export type NotificationSeverity = 'info' | 'warning' | 'critical';
+
+export interface NotificationPayload {
+  type: string;
+  message: string;
+  severity: NotificationSeverity;
+  meta?: Record<string, unknown>;
+}
+
+export interface StoredNotification extends NotificationPayload {
+  id: string;
+  acknowledged: boolean;
+  createdAt: string;
+}
+
 export interface CashDenominationInput {
   total: number;
   /** Optional note-by-note breakdown, e.g. { "500": 10, "200": 5 }. */
@@ -109,7 +148,12 @@ export interface ValidateRequestBody {
   denomination: CashDenominationInput;
   /** Supplied by the frontend once a user has justified a failed check. */
   overrides?: Partial<Record<CheckName, OverridePayload>>;
-  auth: AmazonAuthContext;
+  /**
+   * Optional. If omitted, the worker uses the most recently uploaded
+   * session from the CredentialStore (see /api/admin/session). Only pass
+   * this explicitly if you want to bypass the stored session for one call.
+   */
+  auth?: AmazonAuthContext;
 }
 
 export interface StepResult {

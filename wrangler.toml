@@ -23,3 +23,16 @@ DATA_PROVIDER = "amazon"
 # Example of a separate environment (staging), if you want one:
 # [env.staging]
 # vars = { AMAZON_PROXY_BASE_URL = "https://www.amazonlogistics.eu", BUSINESS_DAY_START_HOUR_IST = "0", DATA_PROVIDER = "amazon" }
+# Secrets (never put these in this file) — set with:
+#   wrangler secret put SUPABASE_URL
+#   wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+#   wrangler secret put ADMIN_API_KEY
+#   wrangler secret put RESEND_API_KEY          # optional, enables email alerts
+#   wrangler secret put OWNER_NOTIFICATION_EMAIL # optional, required alongside RESEND_API_KEY
+#   wrangler secret put NOTIFICATION_FROM_EMAIL  # optional, defaults to ops@yourdomain.com
+# SUPABASE_URL
+# SUPABASE_SERVICE_ROLE_KEY
+# ADMIN_API_KEY
+# RESEND_API_KEY
+# OWNER_NOTIFICATION_EMAIL
+# NOTIFICATION_FROM_EMAIL

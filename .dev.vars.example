@@ -3,3 +3,14 @@
 
 SUPABASE_URL="https://your-project.supabase.co"
 SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
+
+# Shared secret the owner's frontend sends as `x-admin-key` when calling
+# /api/admin/session and /api/admin/notifications. Generate with:
+#   openssl rand -hex 32
+ADMIN_API_KEY="change-me-to-a-long-random-string"
+
+# Optional — enables email alerts (in addition to the dashboard row) when
+# the Amazon session expires. Leave unset to use the dashboard only.
+# RESEND_API_KEY="re_xxx"
+# OWNER_NOTIFICATION_EMAIL="owner@yourcompany.com"
+# NOTIFICATION_FROM_EMAIL="ops-alerts@yourdomain.com"

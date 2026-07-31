@@ -44,7 +44,7 @@ interface RemittanceResponse {
  * src/config.ts so switching API generations is a one-line change.
  */
 export class AmazonLogisticsProvider implements StationDataProvider {
-  constructor(private readonly baseUrl: string) {}
+  constructor(private readonly baseUrl: string) { }
 
   private async callProxy<TReq, TRes>(
     resourcePath: string,
@@ -77,6 +77,16 @@ export class AmazonLogisticsProvider implements StationDataProvider {
 
     if (res.status === 401 || res.status === 403) {
       throw new ProviderError('Amazon station-portal session expired or unauthorized', 401, 'AMAZON_SESSION_EXPIRED');
+    }
+    // Amazon's gateway 404s (rather than 401) once a session is stale enough
+    // — observed in practice, not documented — so treat it the same way:
+    // the stored session needs re-uploading, not a retry.
+    if (res.status === 404) {
+      throw new ProviderError(
+        'Amazon station-portal returned 404 — session is likely stale/invalid',
+        404,
+        'AMAZON_SESSION_EXPIRED',
+      );
     }
     if (!res.ok) {
       const text = await res.text().catch(() => '');

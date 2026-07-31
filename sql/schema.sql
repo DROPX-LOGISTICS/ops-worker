@@ -41,3 +41,34 @@ create index if not exists validation_overrides_run_id_idx
 -- these tables to the anon/authenticated Supabase roles.
 alter table validation_runs enable row level security;
 alter table validation_overrides enable row level security;
+
+
+-- Owner-uploaded Amazon station-portal session (cookie + x-api-usage-key).
+-- Only one row is "active" at a time; uploading a new one supersedes the
+-- previous active row rather than deleting it, so there's an audit trail.
+create table if not exists amazon_sessions (
+  id uuid primary key default gen_random_uuid(),
+  cookie text not null,
+  x_api_usage_key text not null,
+  uploaded_by text not null,
+  status text not null default 'active' check (status in ('active', 'expired')),
+  created_at timestamptz not null default now(),
+  expired_at timestamptz
+);
+
+create index if not exists amazon_sessions_status_idx
+  on amazon_sessions (status, created_at desc);
+
+-- Owner-facing alerts (session expiry, etc.) the frontend dashboard polls.
+create table if not exists owner_notifications (
+  id uuid primary key default gen_random_uuid(),
+  type text not null,
+  message text not null,
+  severity text not null default 'info' check (severity in ('info', 'warning', 'critical')),
+  meta jsonb,
+  acknowledged boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists owner_notifications_ack_idx
+  on owner_notifications (acknowledged, created_at desc);
