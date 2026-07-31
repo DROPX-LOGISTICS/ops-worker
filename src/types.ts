@@ -13,6 +13,21 @@ export interface Env {
   RESEND_API_KEY?: string;
   OWNER_NOTIFICATION_EMAIL?: string;
   NOTIFICATION_FROM_EMAIL?: string;
+  /**
+   * Cloudflare Browser Rendering binding (wrangler `browser.binding = "BROWSER"`).
+   * Present on deploy / `wrangler dev --remote`. Absent in local Miniflare —
+   * use `npm run session:login` instead for local session capture.
+   */
+  BROWSER?: Fetcher;
+  /**
+   * Optional bootstrap credentials. Prefer POST /api/admin/credentials so the
+   * owner can edit them without redeploying. Env values are used only when no
+   * row exists in amazon_portal_credentials yet.
+   */
+  AMAZON_PORTAL_EMAIL?: string;
+  AMAZON_PORTAL_PASSWORD?: string;
+  /** Station used only while scraping cookie/key during auto-login (e.g. TIRC). Not a validate station. */
+  AMAZON_LOGIN_STATION_CODE?: string;
 }
 
 // ---------------------------------------------------------------------------

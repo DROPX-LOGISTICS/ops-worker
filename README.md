@@ -1,45 +1,105 @@
 # cash-recon-worker
 
-Cloudflare Worker that gates a station's cash-denomination submission behind
-three sequential checks against the Amazon station portal, with a
-Supabase-backed manual override trail:
+Cloudflare Worker (Hono) that gates a station cash-denomination submission behind three sequential Amazon Logistics station-portal checks, with a Supabase override trail:
 
-1. **pendingRecon** — every active driver's `overallPendingRecon` must be 0.
-2. **remittanceMatch** — the sum of that business day's `CREATED`/`SUBMITTED`
-   remittances must equal the submitted denomination total.
-3. **liability** — `getStationLiabilitySummary`'s cash + mPOS fields must all
-   be 0.
+1. **pendingRecon** — every active driver's `overallPendingRecon` must be 0
+2. **remittanceMatch** — business-day `CREATED`/`SUBMITTED` remittance sum must equal denomination total
+3. **liability** — `getStationLiabilitySummary` cash + mPOS fields must all be 0
 
-Checks run in that order and stop at the first unresolved failure. If the
-frontend supplies an `overrides.<checkName>` entry with a reason, that
-failure is logged to Supabase and the pipeline continues to the next check
-instead of stopping.
+Checks stop at the first unresolved failure. An `overrides.<checkName>` reason logs the failure and continues.
 
-## Why it's structured this way
+## Architecture
 
-- **`src/providers/StationDataProvider.ts`** is the only thing the pipeline
-  knows about "where station data comes from." `AmazonLogisticsProvider` is
-  the current implementation (calls the station-portal proxy gateway). To
-  point this at a different backend — a server you own, a different Amazon
-  API generation, a mock for tests — implement the interface and add a case
-  in `src/providers/factory.ts`. Nothing in `validators/` or
-  `services/validationPipeline.ts` needs to change.
-- **`src/store/OverrideStore.ts`** is the same idea for persistence.
-  `SupabaseOverrideStore` is the current implementation; swap in Postgres,
-  D1, DynamoDB, etc. by implementing the interface and updating
-  `src/store/factory.ts`.
-- **`src/validators/*`** are pure functions with no framework or network
-  dependency — easy to unit test, easy to reuse if this logic ever needs to
-  run somewhere other than a Worker (a Node service, a cron job, etc.).
-- **`src/services/validationPipeline.ts`** is the only orchestration layer.
-  It fetches all upstream data *concurrently* (the driver list and its
-  reconciliation are the only dependent pair; liability and remittances are
-  independent) before evaluating the three checks in order, so the
-  sequential nature of the business logic doesn't cost extra round-trip
-  latency.
-- **`src/index.ts`** is a thin Hono app — routing and CORS only. Hono was
-  chosen because it's built for the Workers runtime (small, fast, no cold
-  start overhead) rather than for general portability.
+| Layer | Role |
+|---|---|
+| `src/providers/StationDataProvider.ts` | Upstream data interface (`AmazonLogisticsProvider` today) |
+| `src/store/*` | Session, overrides, portal credentials (Supabase) |
+| `src/validators/*` | Pure check functions |
+| `src/services/validationPipeline.ts` | Concurrent fetch + ordered evaluation |
+| `src/session/*` | Auto-login, session ensure/refresh |
+| `src/index.ts` | Hono routes + CORS |
+
+## Setup
+
+```bash
+npm install
+cp .dev.vars.example .dev.vars   # fill Supabase + ADMIN_API_KEY + Amazon portal creds
+```
+
+Run `sql/schema.sql` in the Supabase SQL editor (includes `amazon_sessions`, overrides, notifications, and `amazon_portal_credentials`).
+
+```bash
+npm run typecheck
+npm run dev          # local worker + auto session ensure/login
+```
+
+## Local development
+
+| Command | What it does |
+|---|---|
+| `npm run dev` | Starts `wrangler.dev.toml` worker, then ensures a valid Amazon session (Node Puppeteer login if needed) |
+| `npm run dev:worker` | Worker only (no session bootstrap) |
+| `npm run session:login` | Force local Puppeteer login → `POST /api/admin/session` |
+| `npm run dev:remote` | Remote wrangler (needs network; Browser Rendering available) |
+
+**Important:** Cloudflare Browser Rendering is not available in local Miniflare. Local auto-login uses Node `puppeteer` (`scripts/local-session-login.mjs`). Production uses `@cloudflare/puppeteer` + the `BROWSER` binding.
+
+Scrape station for login capture defaults to **TIRC** (`AMAZON_LOGIN_STATION_CODE`). That is only for opening the cash overview page — `POST /api/validate` always uses the `stationCode` from the frontend.
+
+## Session management
+
+All `/api/admin/*` routes require header `x-admin-key: <ADMIN_API_KEY>`.
+
+### Automated login (preferred)
+
+1. Put portal credentials in `.dev.vars` **or** upsert via API:
+
+```http
+PUT /api/admin/credentials
+x-admin-key: …
+Content-Type: application/json
+
+{
+  "email": "portal-user@example.com",
+  "password": "…",
+  "defaultStationCode": "TIRC",
+  "updatedBy": "owner@example.com"
+}
+```
+
+2. Ensure session:
+
+```bash
+npm run dev
+# or against a deployed worker:
+# POST /api/admin/session/ensure
+# POST /api/admin/session/refresh   # force re-login
+```
+
+3. Frontend calls `POST /api/validate` with the real station (e.g. `JDBD`) — no cookie in the body; the worker uses the shared stored session.
+
+`GET /api/admin/credentials` returns a redacted preview (never the raw password).
+
+### Manual upload (fallback)
+
+If MFA / passkey blocks Puppeteer:
+
+1. Sign in in a browser, open Network for a `…/station/proxyapigateway/data` request
+2. Copy the full **Cookie** header and `x-api-usage-key`
+3. Or paste `scripts/extract-session.console.js` into DevTools (auto-uploads when the worker is up)
+
+```http
+POST /api/admin/session
+{ "cookie": "…", "xApiUsageKey": "…", "uploadedBy": "…" }
+```
+
+### Session expiry behaviour
+
+On Amazon 401/403/404, HTML login page, or sign-in redirect:
+
+1. Mark stored session `expired`
+2. Attempt one Puppeteer re-login and retry validate
+3. On failure, write `AMAZON_LOGIN_FAILED` / `AMAZON_SESSION_EXPIRED` to `owner_notifications` (+ email if Resend is configured)
 
 ## API
 
@@ -47,196 +107,84 @@ instead of stopping.
 
 ```jsonc
 {
-  "stationCode": "TIRC",
-  "date": "2026-07-30",              // business date, YYYY-MM-DD, interpreted in IST
+  "stationCode": "JDBD",
+  "date": "2026-07-30",
   "denomination": {
     "total": 133072.0,
-    "breakdown": { "500": 200, "200": 100 }  // optional, stored for audit only
+    "breakdown": { "500": 200, "200": 100 }
   },
-  "auth": {                          // OPTIONAL — omit to use the stored session (see "Session management" below)
-    "cookie": "session-id=...; session-token=...; ...",
-    "xApiUsageKey": "scc-boson-api-...:...:..."
-  },
-  "overrides": {                     // optional — only send once you have a reason for a failed check
-    "pendingRecon": { "reason": "Driver X reconciled manually via helpdesk ticket 123", "overriddenBy": "priya@company.com" }
+  "overrides": {
+    "pendingRecon": { "reason": "…", "overriddenBy": "ops@company.com" }
   }
 }
 ```
 
-**Response — 200, all checks passed:**
+- **200** — `{ status: "passed", steps, runId }`
+- **409** — `{ status: "blocked", blockedAt, steps, runId }` (expected business block, e.g. pending recon)
+- **401** — session expired / login failed after refresh attempt
 
-```jsonc
-{
-  "status": "passed",
-  "stationCode": "TIRC",
-  "date": "2026-07-30",
-  "steps": [
-    { "name": "pendingRecon", "status": "passed", "details": { "passed": true, "failures": [], "totalPending": 0 } },
-    { "name": "remittanceMatch", "status": "passed", "details": { "...": "..." } },
-    { "name": "liability", "status": "passed", "details": { "...": "..." } }
-  ],
-  "runId": "b3f1..."
-}
-```
+### Admin
 
-**Response — 409, blocked (no override supplied for the failing check):**
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/admin/session` | Manual cookie upload |
+| `GET` | `/api/admin/session/status` | Session + credentials summary |
+| `POST` | `/api/admin/session/ensure` | Probe / refresh if needed |
+| `POST` | `/api/admin/session/refresh` | Force Puppeteer re-login |
+| `POST` | `/api/admin/amazon/liability-summary` | Smoke-test Amazon proxy (`{ "stationCode": "TIRC" }`) |
+| `GET`/`PUT` | `/api/admin/credentials` | Portal credentials |
+| `GET` | `/api/admin/notifications?unacknowledged=true` | Owner alerts |
+| `POST` | `/api/admin/notifications/:id/ack` | Acknowledge alert |
 
-```jsonc
-{
-  "status": "blocked",
-  "blockedAt": "pendingRecon",
-  "steps": [
-    {
-      "name": "pendingRecon",
-      "status": "failed",
-      "details": {
-        "passed": false,
-        "totalPending": 9638.92,
-        "failures": [
-          { "driverName": "B  BHUPATHI", "driverId": "A350CCAU7RT1JN", "pendingReconAmount": 9638.92, "unit": "INR" }
-        ]
-      }
-    }
-  ],
-  "runId": "b3f1..."
-}
-```
+### Other
 
-The frontend shows `steps[i].details` for the blocked check, collects a
-reason, and re-POSTs the same request with
-`overrides.pendingRecon = { reason, overriddenBy }` to move past it. The
-next call will re-run `pendingRecon` (now overridden and logged) and proceed
-to `remittanceMatch`, and so on.
+- `GET /api/health` — liveness
+- `GET /api/stations` — allowlisted station codes
 
-## Session management
+## Deploy
 
-[#session-management](#session-management)
-
-The worker holds no long-lived Amazon credentials. Instead, the owner
-periodically copies a live session out of an authenticated browser tab and
-uploads it once; every `/api/validate` call reuses it until Amazon
-invalidates it, at which point the worker flags it and waits for a fresh
-upload. All endpoints in this section require an `x-admin-key` header
-matching the `ADMIN_API_KEY` secret.
-
-### `POST /api/admin/session`
-
-[#post-apiadminsession](#post-apiadminsession)
-```bash
-{
-"cookie": "session-id=...; session-token=...; ...",
-"xApiUsageKey": "scc-boson-api-...:...:...",
-"uploadedBy": "owner@yourcompany.com"
-}
-```
-
-Stores the session and supersedes whatever was active before it. The
-easiest way to produce this payload is `scripts/extract-session.console.js`
-— paste it into the DevTools console on the logged-in station-portal tab
-(after filling in the worker URL / admin key at the top) and click
-anything that reloads dashboard data; it captures the cookie and the
-`x-api-usage-key` header (which is computed client-side per request, not
-stored anywhere readable) and uploads them automatically.
-
-### `GET /api/admin/session/status`
-
-[#get-apiadminsessionstatus](#get-apiadminsessionstatus)
-
-Returns `{ status: "active" | "expired" | "none", uploadedBy, uploadedAt, expiredAt, cookiePreview, xApiUsageKeyPreview }`
-(cookie/key values are redacted to their last 6 characters).
-
-### `GET /api/admin/notifications?unacknowledged=true`
-
-[#get-apiadminnotifications](#get-apiadminnotifications)
-
-Returns recent owner-facing alerts (currently just `AMAZON_SESSION_EXPIRED`)
-for the dashboard to render. `POST /api/admin/notifications/:id/ack` marks
-one as read.
-
-### What happens when the session expires
-
-[#what-happens-when-the-session-expires](#what-happens-when-the-session-expires)
-
-If Amazon's proxy gateway responds `401`/`403` (unauthorized) **or `404`**
-(observed in practice once a session goes stale enough), the worker:
-
-1. Returns `401 AMAZON_SESSION_EXPIRED` to the frontend immediately, so the
-   in-progress validate call fails loudly rather than silently.
-2. Marks the stored session `expired` in `amazon_sessions`.
-3. Writes a `critical` row to `owner_notifications` (dashboard alert) and,
-   if `RESEND_API_KEY` + `OWNER_NOTIFICATION_EMAIL` are configured, sends an
-   email — see `src/notifications/factory.ts` to add another channel
-   (Slack webhook, SMS, etc.) without touching anything else.
-
-### `GET /api/stations`
-Returns the allowlisted station codes this worker will accept.
-
-### `GET /api/health`
-Liveness check.
-
-## Setup
-
-```bash
-npm install
-cp .dev.vars.example .dev.vars   # fill in your Supabase project values
-```
-
-Run the SQL in `sql/schema.sql` against your Supabase project (SQL editor).
-
-```bash
-npm run dev       # local dev via wrangler
-npm run typecheck
-```
-
-Before deploying, set these secrets (never put them in `wrangler.toml`):
+Secrets (never commit; never put in `wrangler.toml`):
 
 ```bash
 wrangler secret put SUPABASE_URL
 wrangler secret put SUPABASE_SERVICE_ROLE_KEY
-wrangler secret put ADMIN_API_KEY            # generate with: openssl rand -hex 32
+wrangler secret put ADMIN_API_KEY
 
-# Optional — only needed if you want email alerts in addition to the
-# dashboard notification row when the Amazon session expires:
+# Portal bootstrap (optional if you only use PUT /api/admin/credentials)
+wrangler secret put AMAZON_PORTAL_EMAIL
+wrangler secret put AMAZON_PORTAL_PASSWORD
+
+# Optional email alerts
 wrangler secret put RESEND_API_KEY
 wrangler secret put OWNER_NOTIFICATION_EMAIL
 wrangler secret put NOTIFICATION_FROM_EMAIL
 ```
 
-After deploying, upload the first Amazon session (see "Session management"
-below) before hitting `/api/validate` — without one it returns
-`400 NO_STORED_SESSION`.
+Requirements:
+
+- Workers paid plan with **Browser Rendering** enabled (`browser = { binding = "BROWSER" }` in `wrangler.toml`)
+- Schema applied in Supabase
 
 ```bash
 npm run deploy
+npm run tail    # live logs
 ```
 
-## Configuration knobs (`wrangler.toml` `[vars]`)
+After first deploy, call `POST /api/admin/session/ensure` (or store credentials + refresh) before validate traffic.
+
+## Configuration (`wrangler.toml` `[vars]`)
 
 | Var | Purpose |
 |---|---|
-| `AMAZON_PROXY_BASE_URL` | Base URL of the station-portal proxy gateway. |
-| `BUSINESS_DAY_START_HOUR_IST` | Hour (IST, 0–23) a business day starts at. Default `0` (midnight IST), reverse-derived from observed `dateRange` pairs in the portal's own traffic — confirm with ops if a different cutover is used. |
-| `DATA_PROVIDER` | Which `StationDataProvider` `factory.ts` returns. Currently only `"amazon"`. |
+| `AMAZON_PROXY_BASE_URL` | Station-portal proxy gateway base URL |
+| `BUSINESS_DAY_START_HOUR_IST` | Business-day cutover hour IST (default `0`) |
+| `DATA_PROVIDER` | Provider factory key (currently `"amazon"`) |
+| `AMAZON_LOGIN_STATION_CODE` | Station for login page scrape only (default `TIRC`) |
+| `OWNER_EMAIL` | Notification recipient fallback |
 
-## Known constraints / things to revisit
+## Known constraints
 
-- **Auth is session-based, not a long-lived credential.** The worker holds
-  no Amazon credentials of its own — only whatever the owner last uploaded
-  via `POST /api/admin/session`. Expect `AMAZON_SESSION_EXPIRED` (401)
-  responses once that session times out (Amazon has also been observed
-  returning a bare `404` for a stale session, which is treated the same
-  way); when that happens the worker marks the stored session `expired`
-  and raises an `owner_notifications` alert (+ email if configured) rather
-  than requiring the frontend to detect it itself. Re-run
-  `scripts/extract-session.console.js` to recover.
-- **Admin routes are a shared secret, not per-user auth.** `x-admin-key`
-  is a single value shared by whoever manages sessions/notifications —
-  fine for one owner, but swap for real auth if more than one person needs
-  scoped access.
-- **Lock down CORS** in `src/index.ts` to your actual frontend origin(s)
-  before shipping — it's wide open (`origin: '*'`) for now to make local
-  integration easier.
-- **Epsilon-based zero/equality checks** (`src/utils/number.ts`,
-  `AMOUNT_EPSILON = 0.01`) absorb floating point noise seen in the raw API
-  responses (e.g. `0.059999999997671694`). Adjust if INR precision
-  requirements change.
+- MFA / passkey accounts cannot use auto-login — use manual session upload.
+- `x-admin-key` is a shared secret, not per-user auth.
+- CORS is currently `origin: '*'` — lock down in `src/index.ts` before production.
+- Amount equality uses `AMOUNT_EPSILON = 0.01` (`src/utils/number.ts`).

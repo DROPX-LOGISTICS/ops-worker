@@ -1,0 +1,16 @@
+name = "cash-recon-worker"
+main = "src/index.ts"
+compatibility_date = "2024-09-25"
+compatibility_flags = ["nodejs_compat"]
+
+# Local Miniflare config — NO Browser Rendering binding.
+# Cloudflare Browser Rendering only works with `wrangler dev --remote` or
+# deployed workers. For local session login use: npm run session:login
+#
+# Usage: wrangler dev -c wrangler.dev.toml
+
+[vars]
+AMAZON_PROXY_BASE_URL = "https://www.amazonlogistics.eu"
+BUSINESS_DAY_START_HOUR_IST = "0"
+DATA_PROVIDER = "amazon"
+AMAZON_LOGIN_STATION_CODE = "TIRC"

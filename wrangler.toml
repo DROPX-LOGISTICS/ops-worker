@@ -3,36 +3,52 @@ main = "src/index.ts"
 compatibility_date = "2024-09-25"
 compatibility_flags = ["nodejs_compat"]
 
-# Non-secret configuration. Override per-environment below if needed.
+# Browser Rendering — required for POST /api/admin/session/refresh (Puppeteer login).
+# Docs: https://developers.cloudflare.com/browser-run/puppeteer/
+browser = { binding = "BROWSER" }
+
+# Puppeteer login can run 30–90s wall-clock; raise CPU budget on paid plans.
+[limits]
+cpu_ms = 300000
+
+# Production / Default environment variables
 [vars]
 AMAZON_PROXY_BASE_URL = "https://www.amazonlogistics.eu"
-# Derived from observed traffic: business day windows in the station portal
-# start at 00:00 IST and run for a fixed 24h (endTime = startTime + 86399999ms).
-# Change this if your ops team confirms a different cutover hour.
 BUSINESS_DAY_START_HOUR_IST = "0"
-# Selects which StationDataProvider implementation src/providers/factory.ts
-# returns. Add new cases there when you plug in a different backend.
 DATA_PROVIDER = "amazon"
+AMAZON_LOGIN_STATION_CODE = "TIRC"
 
-# Secrets (never put these in this file) — set with:
-#   wrangler secret put SUPABASE_URL
-#   wrangler secret put SUPABASE_SERVICE_ROLE_KEY
-# SUPABASE_URL
-# SUPABASE_SERVICE_ROLE_KEY
+# Secrets (Set locally via .dev.vars or production via 'wrangler secret put')
+# - SUPABASE_URL
+# - SUPABASE_SERVICE_ROLE_KEY
+# - ADMIN_API_KEY
+# Optional bootstrap (prefer PUT /api/admin/credentials so they are editable):
+# - AMAZON_PORTAL_EMAIL
+# - AMAZON_PORTAL_PASSWORD
+# Optional email alerts:
+# - RESEND_API_KEY
+# - OWNER_NOTIFICATION_EMAIL
+# - NOTIFICATION_FROM_EMAIL
 
-# Example of a separate environment (staging), if you want one:
-# [env.staging]
-# vars = { AMAZON_PROXY_BASE_URL = "https://www.amazonlogistics.eu", BUSINESS_DAY_START_HOUR_IST = "0", DATA_PROVIDER = "amazon" }
-# Secrets (never put these in this file) — set with:
-#   wrangler secret put SUPABASE_URL
-#   wrangler secret put SUPABASE_SERVICE_ROLE_KEY
-#   wrangler secret put ADMIN_API_KEY
-#   wrangler secret put RESEND_API_KEY          # optional, enables email alerts
-#   wrangler secret put OWNER_NOTIFICATION_EMAIL # optional, required alongside RESEND_API_KEY
-#   wrangler secret put NOTIFICATION_FROM_EMAIL  # optional, defaults to ops@yourdomain.com
-# SUPABASE_URL
-# SUPABASE_SERVICE_ROLE_KEY
-# ADMIN_API_KEY
-# RESEND_API_KEY
-# OWNER_NOTIFICATION_EMAIL
-# NOTIFICATION_FROM_EMAIL
+# Staging Environment
+[env.staging]
+browser = { binding = "BROWSER" }
+
+[env.staging.vars]
+AMAZON_PROXY_BASE_URL = "https://www.amazonlogistics.eu"
+BUSINESS_DAY_START_HOUR_IST = "0"
+DATA_PROVIDER = "amazon"
+AMAZON_LOGIN_STATION_CODE = "TIRC"
+
+[env.staging.limits]
+cpu_ms = 300000
+
+# Staging Secrets (Set via 'wrangler secret put --env staging')
+# - SUPABASE_URL
+# - SUPABASE_SERVICE_ROLE_KEY
+# - ADMIN_API_KEY
+# - AMAZON_PORTAL_EMAIL
+# - AMAZON_PORTAL_PASSWORD
+# - RESEND_API_KEY
+# - OWNER_NOTIFICATION_EMAIL
+# - NOTIFICATION_FROM_EMAIL

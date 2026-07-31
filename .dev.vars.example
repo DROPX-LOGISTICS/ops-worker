@@ -1,16 +1,27 @@
-# Copy this file to .dev.vars for local `wrangler dev` runs.
+# Copy this file to .dev.vars for local `wrangler dev` / `npm run dev`.
 # .dev.vars is gitignored — never commit real secrets.
 
 SUPABASE_URL="https://your-project.supabase.co"
 SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
 
-# Shared secret the owner's frontend sends as `x-admin-key` when calling
-# /api/admin/session and /api/admin/notifications. Generate with:
+# Shared secret for /api/admin/* (header: x-admin-key). Generate with:
 #   openssl rand -hex 32
 ADMIN_API_KEY="change-me-to-a-long-random-string"
 
-# Optional — enables email alerts (in addition to the dashboard row) when
-# the Amazon session expires. Leave unset to use the dashboard only.
+# Amazon Logistics portal login (used by scripts/local-session-login.mjs and
+# Cloudflare Browser Rendering auto-refresh). Prefer storing these via
+# PUT /api/admin/credentials after first deploy so they can be rotated without redeploy.
+AMAZON_PORTAL_EMAIL="portal-user@example.com"
+AMAZON_PORTAL_PASSWORD="your-portal-password"
+
+# Station used only to open the cash overview page during login capture.
+# Validate requests still send their own stationCode from the frontend.
+AMAZON_LOGIN_STATION_CODE="TIRC"
+
+# Who receives AMAZON_LOGIN_FAILED / AMAZON_SESSION_EXPIRED notifications.
+OWNER_EMAIL="owner@yourcompany.com"
+
+# Optional — email alerts in addition to owner_notifications rows.
 # RESEND_API_KEY="re_xxx"
 # OWNER_NOTIFICATION_EMAIL="owner@yourcompany.com"
 # NOTIFICATION_FROM_EMAIL="ops-alerts@yourdomain.com"

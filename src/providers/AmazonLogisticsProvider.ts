@@ -53,14 +53,25 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     auth: AmazonAuthContext,
   ): Promise<TRes> {
     const envelope: ProxyEnvelope<TReq> = { resourcePath, httpMethod: 'POST', processName, requestBody };
+    const proxyUrl = `${this.baseUrl}/station/proxyapigateway/data`;
 
     let res: Response;
     try {
-      res = await fetch(`${this.baseUrl}/station/proxyapigateway/data`, {
+      // Mirror the browser XHR headers from the station portal. Without
+      // Origin/Referer/User-Agent, Amazon redirects to the /ap/signin HTML
+      // page (often via 302 → 200 HTML), which is what produced the
+      // "<!doctype is not valid JSON" failure even with a fresh cookie.
+      res = await fetch(proxyUrl, {
         method: 'POST',
+        redirect: 'manual',
         headers: {
           'content-type': 'application/json',
           accept: '*/*',
+          'accept-language': 'en-US,en;q=0.9',
+          origin: this.baseUrl,
+          referer: `${this.baseUrl}/station/dashboard/cashoverview`,
+          'user-agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
           cookie: auth.cookie,
           'x-api-usage-key': auth.xApiUsageKey,
           'x-requested-with': 'XMLHttpRequest',
@@ -72,6 +83,16 @@ export class AmazonLogisticsProvider implements StationDataProvider {
         `Network error calling Amazon proxy (${resourcePath}): ${(err as Error).message}`,
         502,
         'PROVIDER_NETWORK_ERROR',
+      );
+    }
+
+    // 3xx with redirect:manual — almost always a bounce to /ap/signin.
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location') ?? '(no location)';
+      throw new ProviderError(
+        `Amazon station-portal redirected (${res.status} → ${location}) — session is likely stale/invalid`,
+        401,
+        'AMAZON_SESSION_EXPIRED',
       );
     }
 
@@ -97,7 +118,33 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       );
     }
 
-    return (await res.json()) as TRes;
+    // Stale/invalid sessions often get an HTML login/challenge page with
+    // HTTP 200 instead of 401/404 — parse as text first so we don't blow up
+    // with a raw SyntaxError from res.json().
+    const raw = await res.text();
+    const trimmed = raw.trimStart();
+    if (
+      trimmed.startsWith('<!doctype') ||
+      trimmed.startsWith('<!DOCTYPE') ||
+      trimmed.startsWith('<html') ||
+      trimmed.startsWith('<HTML')
+    ) {
+      throw new ProviderError(
+        'Amazon station-portal returned HTML instead of JSON — session is likely stale/invalid',
+        401,
+        'AMAZON_SESSION_EXPIRED',
+      );
+    }
+
+    try {
+      return JSON.parse(raw) as TRes;
+    } catch {
+      throw new ProviderError(
+        `Amazon proxy returned non-JSON body (${resourcePath}): ${raw.slice(0, 200)}`,
+        502,
+        'PROVIDER_UPSTREAM_ERROR',
+      );
+    }
   }
 
   async getActiveDrivers(stationCode: string, auth: AmazonAuthContext): Promise<Driver[]> {

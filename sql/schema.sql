@@ -72,3 +72,21 @@ create table if not exists owner_notifications (
 
 create index if not exists owner_notifications_ack_idx
   on owner_notifications (acknowledged, created_at desc);
+
+-- Editable Amazon portal login credentials used by Puppeteer auto-login.
+-- Single-row table (id forced to 1). Password is stored server-side only;
+-- admin GET endpoints never return the raw password (redacted preview only).
+create table if not exists amazon_portal_credentials (
+  id smallint primary key default 1 check (id = 1),
+  email text not null,
+  password text not null,
+  default_station_code text not null default 'TIRC',
+  updated_by text not null default 'josephmathew072@gmail.com',
+  updated_at timestamptz not null default now(),
+  -- Simple lock so concurrent validate/refresh calls don't launch two browsers.
+  login_locked_until timestamptz,
+  last_login_at timestamptz,
+  last_login_error text
+);
+
+alter table amazon_portal_credentials enable row level security;

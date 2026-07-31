@@ -44,7 +44,8 @@ export async function runValidationPipeline(
 ): Promise<PipelineResult> {
   assertValidRequest(body);
 
-  const { stationCode, date, denomination, overrides = {}, auth } = body;
+  const { stationCode, date, denomination, overrides = {} } = body;
+  const auth = body.auth!;
   const range = getBusinessDayRange(date, Number(env.BUSINESS_DAY_START_HOUR_IST ?? '0'));
 
   const [reconciliationList, liabilitySummary, remittanceList] = await Promise.all([

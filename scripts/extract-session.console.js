@@ -16,9 +16,9 @@
  * GET /api/admin/session/status) says the stored session is expired.
  */
 (() => {
-    const WORKER_URL = 'https://your-worker.your-subdomain.workers.dev'; // <-- set this
-    const ADMIN_KEY = 'your-ADMIN_API_KEY-value'; // <-- set this (same value as the worker's ADMIN_API_KEY secret)
-    const UPLOADED_BY = 'owner@yourcompany.com'; // <-- who's uploading, for the audit trail
+    const WORKER_URL = 'http://127.0.0.1:8787'; // <-- set this
+    const ADMIN_KEY = '1dcb123aa9ce6e3567b07879a97a16305d4977104c8cb190970d1193dab9b465'; // <-- set this (same value as the worker's ADMIN_API_KEY secret)
+    const UPLOADED_BY = 'josephmathew072@gmail.com'; // <-- who's uploading, for the audit trail
   
     const originalFetch = window.fetch;
     let done = false;
@@ -39,13 +39,31 @@
         if (!xApiUsageKey) {
           console.error('[extract-session] Could not find x-api-usage-key on this request. Try again on a different action.');
         } else {
+          // document.cookie misses HttpOnly cookies. If validate still gets
+          // HTML/401 after upload, replace cookie with the full Cookie header
+          // from Network → proxyapigateway/data → Request Headers.
+          const cookie = document.cookie;
+          console.log(
+            '[extract-session] cookie length:',
+            cookie.length,
+            '| session-token:',
+            cookie.includes('session-token='),
+            '| at-acbeu:',
+            cookie.includes('at-acbeu='),
+          );
+          if (!cookie.includes('session-token=') || !cookie.includes('at-acbeu=')) {
+            console.warn(
+              '[extract-session] Cookie looks incomplete. Copy the Cookie header from Network and POST /api/admin/session manually.',
+            );
+          }
+
           console.log('[extract-session] Session captured, uploading...');
           try {
             const res = await originalFetch(`${WORKER_URL}/api/admin/session`, {
               method: 'POST',
               headers: { 'content-type': 'application/json', 'x-admin-key': ADMIN_KEY },
               body: JSON.stringify({
-                cookie: document.cookie,
+                cookie,
                 xApiUsageKey,
                 uploadedBy: UPLOADED_BY,
               }),
