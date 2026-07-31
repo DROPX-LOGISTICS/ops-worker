@@ -143,32 +143,52 @@ On Amazon 401/403/404, HTML login page, or sign-in redirect:
 
 ## Deploy
 
-Secrets (never commit; never put in `wrangler.toml`):
+### If local `wrangler deploy` fails with `fetch failed`
+
+Your machine can auth (`wrangler whoami`) but **uploads over ~100KB are reset** on some ISP/VPN/antivirus paths. Re-login does not fix that. Use either:
+
+1. **Phone hotspot** (or another network), then `npm run deploy`
+2. **GitHub Actions** (recommended on this network) — see below
+
+### GitHub Actions deploy
+
+1. Create an API token: [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens) → **Create Token** → template **Edit Cloudflare Workers** (needs Workers Scripts Edit + Account read).
+2. In the GitHub repo → **Settings → Secrets and variables → Actions**, add:
+   - `CLOUDFLARE_API_TOKEN` — the token from step 1
+   - `CLOUDFLARE_ACCOUNT_ID` — `0c1359d755dc6714ead89c7c8e9eb9d1`
+3. Push to `main` or run **Actions → Deploy Worker → Run workflow**.
+
+Local deploy (when the network allows):
 
 ```bash
-wrangler secret put SUPABASE_URL
-wrangler secret put SUPABASE_SERVICE_ROLE_KEY
-wrangler secret put ADMIN_API_KEY
+npm run deploy          # production (top-level env)
+npm run deploy -- --env staging
+npm run tail
+```
+
+### Worker secrets (set once per environment)
+
+Never commit these; never put them in `wrangler.toml` `[vars]`:
+
+```bash
+npx wrangler secret put SUPABASE_URL --env=""
+npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY --env=""
+npx wrangler secret put ADMIN_API_KEY --env=""
 
 # Portal bootstrap (optional if you only use PUT /api/admin/credentials)
-wrangler secret put AMAZON_PORTAL_EMAIL
-wrangler secret put AMAZON_PORTAL_PASSWORD
+npx wrangler secret put AMAZON_PORTAL_EMAIL --env=""
+npx wrangler secret put AMAZON_PORTAL_PASSWORD --env=""
 
 # Optional email alerts
-wrangler secret put RESEND_API_KEY
-wrangler secret put OWNER_NOTIFICATION_EMAIL
-wrangler secret put NOTIFICATION_FROM_EMAIL
+npx wrangler secret put RESEND_API_KEY --env=""
+npx wrangler secret put OWNER_NOTIFICATION_EMAIL --env=""
+npx wrangler secret put NOTIFICATION_FROM_EMAIL --env=""
 ```
 
 Requirements:
 
-- Workers paid plan with **Browser Rendering** enabled (`browser = { binding = "BROWSER" }` in `wrangler.toml`)
+- Workers paid plan with **Browser Rendering** enabled
 - Schema applied in Supabase
-
-```bash
-npm run deploy
-npm run tail    # live logs
-```
 
 After first deploy, call `POST /api/admin/session/ensure` (or store credentials + refresh) before validate traffic.
 
