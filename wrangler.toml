@@ -1,0 +1,25 @@
+name = "cash-recon-worker"
+main = "src/index.ts"
+compatibility_date = "2024-09-25"
+compatibility_flags = ["nodejs_compat"]
+
+# Non-secret configuration. Override per-environment below if needed.
+[vars]
+AMAZON_PROXY_BASE_URL = "https://www.amazonlogistics.eu"
+# Derived from observed traffic: business day windows in the station portal
+# start at 00:00 IST and run for a fixed 24h (endTime = startTime + 86399999ms).
+# Change this if your ops team confirms a different cutover hour.
+BUSINESS_DAY_START_HOUR_IST = "0"
+# Selects which StationDataProvider implementation src/providers/factory.ts
+# returns. Add new cases there when you plug in a different backend.
+DATA_PROVIDER = "amazon"
+
+# Secrets (never put these in this file) — set with:
+#   wrangler secret put SUPABASE_URL
+#   wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+# SUPABASE_URL
+# SUPABASE_SERVICE_ROLE_KEY
+
+# Example of a separate environment (staging), if you want one:
+# [env.staging]
+# vars = { AMAZON_PROXY_BASE_URL = "https://www.amazonlogistics.eu", BUSINESS_DAY_START_HOUR_IST = "0", DATA_PROVIDER = "amazon" }

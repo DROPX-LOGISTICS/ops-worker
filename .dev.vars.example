@@ -1,0 +1,5 @@
+# Copy this file to .dev.vars for local `wrangler dev` runs.
+# .dev.vars is gitignored — never commit real secrets.
+
+SUPABASE_URL="https://your-project.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"

@@ -1,0 +1,43 @@
+-- Run this in the Supabase SQL editor before deploying.
+-- Uses the service-role key from the Worker, so RLS can stay strict/off for
+-- anon/authenticated roles — the Worker is the only writer.
+
+create extension if not exists "pgcrypto";
+
+create table if not exists validation_runs (
+  id uuid primary key default gen_random_uuid(),
+  station_code text not null,
+  business_date date not null,
+  denomination_total numeric not null,
+  status text not null check (status in ('passed', 'blocked')),
+  blocked_at text check (blocked_at in ('pendingRecon', 'remittanceMatch', 'liability')),
+  steps jsonb not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists validation_runs_station_date_idx
+  on validation_runs (station_code, business_date);
+
+create table if not exists validation_overrides (
+  id uuid primary key default gen_random_uuid(),
+  run_id uuid references validation_runs (id) on delete set null,
+  station_code text not null,
+  business_date date not null,
+  check_name text not null check (check_name in ('pendingRecon', 'remittanceMatch', 'liability')),
+  reason text not null,
+  overridden_by text not null,
+  details jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists validation_overrides_station_date_idx
+  on validation_overrides (station_code, business_date);
+
+create index if not exists validation_overrides_run_id_idx
+  on validation_overrides (run_id);
+
+-- Lock down direct table access; the Worker uses the service-role key which
+-- bypasses RLS entirely, so these policies matter only if you ever expose
+-- these tables to the anon/authenticated Supabase roles.
+alter table validation_runs enable row level security;
+alter table validation_overrides enable row level security;
