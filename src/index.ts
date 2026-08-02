@@ -11,6 +11,10 @@ import {
 } from './routes/adminSession';
 import { getCredentialsHandler, upsertCredentialsHandler } from './routes/adminCredentials';
 import { liabilitySummaryHandler } from './routes/adminAmazonProbe';
+import {
+  driverReconciliationHandler,
+  remittanceHandler,
+} from './routes/executiveAmazon';
 import { listNotificationsHandler, acknowledgeNotificationHandler } from './routes/notifications';
 import { adminAuth } from './middleware/adminAuth';
 import { errorHandler } from './middleware/errorHandler';
@@ -35,6 +39,10 @@ app.onError(errorHandler);
 app.get('/api/health', healthHandler);
 app.get('/api/stations', (c) => c.json({ stations: Array.from(ALLOWED_STATIONS) }));
 app.post('/api/validate', validateHandler);
+
+// Executive Reconciliation UI — station change / cash submit (uses stored Amazon session).
+app.post('/api/executive/driver-reconciliation', driverReconciliationHandler);
+app.post('/api/executive/remittance', remittanceHandler);
 
 // Owner-only: session + portal credentials + notification inbox.
 app.use('/api/admin/*', adminAuth);

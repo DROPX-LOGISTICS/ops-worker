@@ -103,6 +103,59 @@ On Amazon 401/403/404, HTML login page, or sign-in redirect:
 
 ## API
 
+### Executive Reconciliation (frontend)
+
+Use these when the ops UI loads / changes station, then when the user submits cash.
+
+#### 1. Station change / open Executive Reconciliation — drivers + pending recon
+
+```http
+POST /api/executive/driver-reconciliation
+Content-Type: application/json
+
+{ "stationCode": "JDBD", "date": "2026-08-02" }
+```
+
+**200 response:**
+
+```jsonc
+{
+  "status": "ok",
+  "stationCode": "JDBD",
+  "date": "2026-08-02",
+  "dateRange": { "startTime": …, "endTime": … },
+  "drivers": [ /* getDrivers / driverList */ ],
+  "driverCount": 12,
+  "reconciliation": [ /* getDriverReconciliation list */ ],
+  "reconciliationCount": 12
+}
+```
+
+Call this whenever the executive selects or changes `stationCode`.
+
+#### 2. Submit cash & run SCC — remittances
+
+```http
+POST /api/executive/remittance
+Content-Type: application/json
+
+{ "stationCode": "JDBD", "date": "2026-08-02" }
+```
+
+**200 response:**
+
+```jsonc
+{
+  "status": "ok",
+  "stationCode": "JDBD",
+  "date": "2026-08-02",
+  "remittances": [ /* getRemittance / remittanceList */ ],
+  "remittanceCount": 3
+}
+```
+
+Both use the **stored Amazon session** (same as validate). No `x-admin-key`. Ensure a session first via `/api/admin/session/ensure` if needed.
+
 ### `POST /api/validate`
 
 ```jsonc

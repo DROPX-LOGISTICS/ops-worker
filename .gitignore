@@ -3,3 +3,5 @@ node_modules
 .wrangler
 dist
 *.log
+
+.cf-token-created.json
