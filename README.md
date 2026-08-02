@@ -136,7 +136,37 @@ Content-Type: application/json
 
 Call this whenever the executive selects or changes `stationCode`.
 
-#### 2. Submit cash & run SCC — remittances
+#### 2. Run SCC (for now) — station liability summary
+
+```http
+POST /api/admin/executive/liability-summary
+x-admin-key: …
+Content-Type: application/json
+
+{ "stationCode": "JDBD", "date": "2026-08-02" }
+```
+
+**200 response:**
+
+```jsonc
+{
+  "status": "ok",
+  "stationCode": "JDBD",
+  "date": "2026-08-02",
+  "summary": {
+    "cashSummary": { "expectedAmount": {…}, "actualAmount": {…}, "shortExcessAmount": {…}, "count": 0 },
+    "mposSummary": { "amount": {…}, "count": 0 }
+  },
+  "check": {
+    "passed": true,
+    "nonZeroFields": []
+  }
+}
+```
+
+Use `check.passed` in the UI to gate SCC. If `false`, show `check.nonZeroFields`.
+
+#### 3. Remittance (frontend later)
 
 ```http
 POST /api/admin/executive/remittance
@@ -158,7 +188,7 @@ Content-Type: application/json
 }
 ```
 
-Both use the **stored Amazon session**. Without a valid `x-admin-key` they return `401`. Ensure a portal session first via `/api/admin/session/ensure` if needed.
+All three require `x-admin-key` and use the **stored Amazon session**. Ensure a portal session first via `/api/admin/session/ensure` if needed.
 
 ### `POST /api/admin/validate`
 
@@ -193,7 +223,8 @@ Requires `x-admin-key` (same as all other Amazon-backed routes).
 | `POST` | `/api/admin/session/refresh` | Force Puppeteer re-login |
 | `POST` | `/api/admin/amazon/liability-summary` | Smoke-test Amazon proxy (`{ "stationCode": "TIRC" }`) |
 | `POST` | `/api/admin/executive/driver-reconciliation` | Drivers + reconciliation for station change |
-| `POST` | `/api/admin/executive/remittance` | Remittance list for cash submit / SCC |
+| `POST` | `/api/admin/executive/liability-summary` | Liability summary for Run SCC (frontend) |
+| `POST` | `/api/admin/executive/remittance` | Remittance list (frontend later) |
 | `GET`/`PUT` | `/api/admin/credentials` | Portal credentials |
 | `GET` | `/api/admin/notifications?unacknowledged=true` | Owner alerts |
 | `POST` | `/api/admin/notifications/:id/ack` | Acknowledge alert |

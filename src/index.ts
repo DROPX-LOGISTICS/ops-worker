@@ -13,6 +13,7 @@ import { getCredentialsHandler, upsertCredentialsHandler } from './routes/adminC
 import { liabilitySummaryHandler } from './routes/adminAmazonProbe';
 import {
   driverReconciliationHandler,
+  liabilitySummaryExecutiveHandler,
   remittanceHandler,
 } from './routes/executiveAmazon';
 import { listNotificationsHandler, acknowledgeNotificationHandler } from './routes/notifications';
@@ -48,6 +49,7 @@ app.post('/api/admin/session/ensure', ensureSessionHandler);
 app.post('/api/admin/session/refresh', refreshSessionHandler);
 app.post('/api/admin/amazon/liability-summary', liabilitySummaryHandler);
 app.post('/api/admin/executive/driver-reconciliation', driverReconciliationHandler);
+app.post('/api/admin/executive/liability-summary', liabilitySummaryExecutiveHandler);
 app.post('/api/admin/executive/remittance', remittanceHandler);
 app.get('/api/admin/credentials', getCredentialsHandler);
 app.put('/api/admin/credentials', upsertCredentialsHandler);

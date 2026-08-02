@@ -5,6 +5,7 @@ import { ALLOWED_STATIONS } from '../config';
 import { getBusinessDayRange } from '../utils/dateRange';
 import { createStationDataProvider } from '../providers/factory';
 import { ensureValidAmazonSession } from '../session/ensureSession';
+import { checkLiability } from '../validators/liability';
 
 interface StationDateBody {
   stationCode?: string;
@@ -102,7 +103,36 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
 }
 
 /**
- * Submit cash & run SCC:
+ * Run SCC (frontend, for now):
+ * getStationLiabilitySummary + zero-check helper for the UI.
+ *
+ * POST /api/admin/executive/liability-summary
+ * Header: x-admin-key
+ * { "stationCode": "JDBD", "date": "2026-08-02" }
+ */
+export async function liabilitySummaryExecutiveHandler(c: Context<{ Bindings: Env }>) {
+  const { stationCode, date, range } = await parseStationDate(c);
+
+  const session = await requireAmazonSession(c, `executive-liability:${stationCode}`);
+  if (!session.ok) return session.response;
+
+  const provider = createStationDataProvider(c.env);
+  const summary = await provider.getStationLiabilitySummary(stationCode, range, session.auth);
+  const check = checkLiability(summary);
+
+  return c.json({
+    status: 'ok',
+    stationCode,
+    date,
+    dateRange: range,
+    sessionSource: session.sessionSource,
+    summary,
+    check,
+  });
+}
+
+/**
+ * Remittance list (frontend later / optional now):
  * getRemittance for the station/business day.
  *
  * POST /api/admin/executive/remittance
