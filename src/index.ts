@@ -38,19 +38,17 @@ app.onError(errorHandler);
 
 app.get('/api/health', healthHandler);
 app.get('/api/stations', (c) => c.json({ stations: Array.from(ALLOWED_STATIONS) }));
-app.post('/api/validate', validateHandler);
 
-// Executive Reconciliation UI — station change / cash submit (uses stored Amazon session).
-app.post('/api/executive/driver-reconciliation', driverReconciliationHandler);
-app.post('/api/executive/remittance', remittanceHandler);
-
-// Owner-only: session + portal credentials + notification inbox.
+// All Amazon-backed routes require x-admin-key.
 app.use('/api/admin/*', adminAuth);
+app.post('/api/admin/validate', validateHandler);
 app.post('/api/admin/session', uploadSessionHandler);
 app.get('/api/admin/session/status', sessionStatusHandler);
 app.post('/api/admin/session/ensure', ensureSessionHandler);
 app.post('/api/admin/session/refresh', refreshSessionHandler);
 app.post('/api/admin/amazon/liability-summary', liabilitySummaryHandler);
+app.post('/api/admin/executive/driver-reconciliation', driverReconciliationHandler);
+app.post('/api/admin/executive/remittance', remittanceHandler);
 app.get('/api/admin/credentials', getCredentialsHandler);
 app.put('/api/admin/credentials', upsertCredentialsHandler);
 app.get('/api/admin/notifications', listNotificationsHandler);

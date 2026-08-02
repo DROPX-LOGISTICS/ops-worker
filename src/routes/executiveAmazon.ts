@@ -69,7 +69,8 @@ async function requireAmazonSession(c: Context<{ Bindings: Env }>, triggeredBy: 
  * Executive Reconciliation / station change:
  * getDrivers → getDriverReconciliation, return both payloads.
  *
- * POST /api/executive/driver-reconciliation
+ * POST /api/admin/executive/driver-reconciliation
+ * Header: x-admin-key
  * { "stationCode": "JDBD", "date": "2026-08-02" }
  */
 export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>) {
@@ -104,7 +105,8 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
  * Submit cash & run SCC:
  * getRemittance for the station/business day.
  *
- * POST /api/executive/remittance
+ * POST /api/admin/executive/remittance
+ * Header: x-admin-key
  * { "stationCode": "JDBD", "date": "2026-08-02" }
  */
 export async function remittanceHandler(c: Context<{ Bindings: Env }>) {

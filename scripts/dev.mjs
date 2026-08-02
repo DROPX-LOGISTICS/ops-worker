@@ -144,7 +144,7 @@ async function main() {
     console.error('[dev] Owner should fix AMAZON_PORTAL_* credentials. Worker stays up for manual upload.');
   }
 
-  console.log('[dev] Ready — frontend can POST /api/validate with its own stationCode.');
+  console.log('[dev] Ready — frontend can POST /api/admin/validate with x-admin-key + stationCode.');
 
   const shutdown = () => {
     child.kill('SIGINT');

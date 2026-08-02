@@ -44,7 +44,7 @@ npm run dev          # local worker + auto session ensure/login
 
 **Important:** Cloudflare Browser Rendering is not available in local Miniflare. Local auto-login uses Node `puppeteer` (`scripts/local-session-login.mjs`). Production uses `@cloudflare/puppeteer` + the `BROWSER` binding.
 
-Scrape station for login capture defaults to **TIRC** (`AMAZON_LOGIN_STATION_CODE`). That is only for opening the cash overview page — `POST /api/validate` always uses the `stationCode` from the frontend.
+Scrape station for login capture defaults to **TIRC** (`AMAZON_LOGIN_STATION_CODE`). That is only for opening the cash overview page — `POST /api/admin/validate` always uses the `stationCode` from the frontend.
 
 ## Session management
 
@@ -76,7 +76,7 @@ npm run dev
 # POST /api/admin/session/refresh   # force re-login
 ```
 
-3. Frontend calls `POST /api/validate` with the real station (e.g. `JDBD`) — no cookie in the body; the worker uses the shared stored session.
+3. Frontend calls `POST /api/admin/validate` with `x-admin-key` and the real station (e.g. `JDBD`) — no cookie in the body; the worker uses the shared stored session.
 
 `GET /api/admin/credentials` returns a redacted preview (never the raw password).
 
@@ -105,12 +105,15 @@ On Amazon 401/403/404, HTML login page, or sign-in redirect:
 
 ### Executive Reconciliation (frontend)
 
+Require header `x-admin-key: <ADMIN_API_KEY>` (same as other `/api/admin/*` routes).
+
 Use these when the ops UI loads / changes station, then when the user submits cash.
 
 #### 1. Station change / open Executive Reconciliation — drivers + pending recon
 
 ```http
-POST /api/executive/driver-reconciliation
+POST /api/admin/executive/driver-reconciliation
+x-admin-key: …
 Content-Type: application/json
 
 { "stationCode": "JDBD", "date": "2026-08-02" }
@@ -136,7 +139,8 @@ Call this whenever the executive selects or changes `stationCode`.
 #### 2. Submit cash & run SCC — remittances
 
 ```http
-POST /api/executive/remittance
+POST /api/admin/executive/remittance
+x-admin-key: …
 Content-Type: application/json
 
 { "stationCode": "JDBD", "date": "2026-08-02" }
@@ -154,9 +158,11 @@ Content-Type: application/json
 }
 ```
 
-Both use the **stored Amazon session** (same as validate). No `x-admin-key`. Ensure a session first via `/api/admin/session/ensure` if needed.
+Both use the **stored Amazon session**. Without a valid `x-admin-key` they return `401`. Ensure a portal session first via `/api/admin/session/ensure` if needed.
 
-### `POST /api/validate`
+### `POST /api/admin/validate`
+
+Requires `x-admin-key` (same as all other Amazon-backed routes).
 
 ```jsonc
 {
@@ -174,17 +180,20 @@ Both use the **stored Amazon session** (same as validate). No `x-admin-key`. Ens
 
 - **200** — `{ status: "passed", steps, runId }`
 - **409** — `{ status: "blocked", blockedAt, steps, runId }` (expected business block, e.g. pending recon)
-- **401** — session expired / login failed after refresh attempt
+- **401** — missing/invalid `x-admin-key`, or Amazon session expired / login failed after refresh attempt
 
 ### Admin
 
 | Method | Path | Purpose |
 |---|---|---|
+| `POST` | `/api/admin/validate` | Full cash validation pipeline (Amazon) |
 | `POST` | `/api/admin/session` | Manual cookie upload |
 | `GET` | `/api/admin/session/status` | Session + credentials summary |
 | `POST` | `/api/admin/session/ensure` | Probe / refresh if needed |
 | `POST` | `/api/admin/session/refresh` | Force Puppeteer re-login |
 | `POST` | `/api/admin/amazon/liability-summary` | Smoke-test Amazon proxy (`{ "stationCode": "TIRC" }`) |
+| `POST` | `/api/admin/executive/driver-reconciliation` | Drivers + reconciliation for station change |
+| `POST` | `/api/admin/executive/remittance` | Remittance list for cash submit / SCC |
 | `GET`/`PUT` | `/api/admin/credentials` | Portal credentials |
 | `GET` | `/api/admin/notifications?unacknowledged=true` | Owner alerts |
 | `POST` | `/api/admin/notifications/:id/ack` | Acknowledge alert |
