@@ -1,4 +1,11 @@
-import type { Driver, DriverReconciliationEntry, LiabilitySummary, RemittanceEntry, AmazonAuthContext } from '../types';
+import type {
+  Driver,
+  DriverReconciliationEntry,
+  LiabilitySummary,
+  RemittanceEntry,
+  ShipmentSettlementDetail,
+  AmazonAuthContext,
+} from '../types';
 import type { DateRange } from '../utils/dateRange';
 
 /**
@@ -20,6 +27,13 @@ export interface StationDataProvider {
     drivers: Driver[],
     auth: AmazonAuthContext,
   ): Promise<DriverReconciliationEntry[]>;
+
+  getDriverShipmentListDetails(
+    stationCode: string,
+    range: DateRange,
+    employeeId: number,
+    auth: AmazonAuthContext,
+  ): Promise<ShipmentSettlementDetail[]>;
 
   getStationLiabilitySummary(stationCode: string, range: DateRange, auth: AmazonAuthContext): Promise<LiabilitySummary>;
 

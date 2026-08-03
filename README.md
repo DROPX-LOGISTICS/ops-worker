@@ -1,22 +1,41 @@
 # cash-recon-worker
 
-Cloudflare Worker (Hono) that gates a station cash-denomination submission behind three sequential Amazon Logistics station-portal checks, with a Supabase override trail:
+Cloudflare Worker (Hono) for DropX cash / SCC ops against the Amazon Logistics station portal.
 
-1. **pendingRecon** — every active driver's `overallPendingRecon` must be 0
-2. **remittanceMatch** — business-day `CREATED`/`SUBMITTED` remittance sum must equal denomination total
-3. **liability** — `getStationLiabilitySummary` cash + mPOS fields must all be 0
+It provides:
 
-Checks stop at the first unresolved failure. An `overrides.<checkName>` reason logs the failure and continues.
+1. **Executive UI APIs** — station change (drivers + reconciliation + expected cash) and Run SCC (liability)
+2. **Full validate pipeline** — pending recon → remittance match → liability (with Supabase override trail)
+3. **Session management** — stored Amazon cookie/key, optional Puppeteer auto-login
+
+All Amazon-backed routes require header **`x-admin-key: <ADMIN_API_KEY>`**. Public routes are only health and the station allowlist.
+
+## Frontend flow (current)
+
+| UI action | API |
+|---|---|
+| Open / change station | `POST /api/admin/executive/driver-reconciliation` |
+| Run SCC | `POST /api/admin/executive/liability-summary` |
+| Remittance (later) | `POST /api/admin/executive/remittance` |
+
+Always send:
+
+```http
+x-admin-key: <ADMIN_API_KEY>
+Content-Type: application/json
+```
 
 ## Architecture
 
 | Layer | Role |
 |---|---|
-| `src/providers/StationDataProvider.ts` | Upstream data interface (`AmazonLogisticsProvider` today) |
+| `src/providers/StationDataProvider.ts` | Upstream interface (`AmazonLogisticsProvider`) |
 | `src/store/*` | Session, overrides, portal credentials (Supabase) |
-| `src/validators/*` | Pure check functions |
-| `src/services/validationPipeline.ts` | Concurrent fetch + ordered evaluation |
-| `src/session/*` | Auto-login, session ensure/refresh |
+| `src/validators/*` | Pure check helpers (`pendingRecon`, remittance, liability) |
+| `src/services/validationPipeline.ts` | Full validate orchestration |
+| `src/session/*` | Auto-login, ensure / refresh |
+| `src/routes/executiveAmazon.ts` | Executive station / SCC / remittance endpoints |
+| `src/utils/expectedCash.ts` | Sum CASH `receivedAmount` from shipment lists |
 | `src/index.ts` | Hono routes + CORS |
 
 ## Setup
@@ -26,7 +45,7 @@ npm install
 cp .dev.vars.example .dev.vars   # fill Supabase + ADMIN_API_KEY + Amazon portal creds
 ```
 
-Run `sql/schema.sql` in the Supabase SQL editor (includes `amazon_sessions`, overrides, notifications, and `amazon_portal_credentials`).
+Run `sql/schema.sql` in the Supabase SQL editor (`amazon_sessions`, overrides, notifications, `amazon_portal_credentials`).
 
 ```bash
 npm run typecheck
@@ -37,18 +56,18 @@ npm run dev          # local worker + auto session ensure/login
 
 | Command | What it does |
 |---|---|
-| `npm run dev` | Starts `wrangler.dev.toml` worker, then ensures a valid Amazon session (Node Puppeteer login if needed) |
+| `npm run dev` | Starts `wrangler.dev.toml` worker, then ensures a valid Amazon session (Node Puppeteer if needed) |
 | `npm run dev:worker` | Worker only (no session bootstrap) |
 | `npm run session:login` | Force local Puppeteer login → `POST /api/admin/session` |
-| `npm run dev:remote` | Remote wrangler (needs network; Browser Rendering available) |
+| `npm run dev:remote` | Remote wrangler (Browser Rendering available; needs stable network) |
 
 **Important:** Cloudflare Browser Rendering is not available in local Miniflare. Local auto-login uses Node `puppeteer` (`scripts/local-session-login.mjs`). Production uses `@cloudflare/puppeteer` + the `BROWSER` binding.
 
-Scrape station for login capture defaults to **TIRC** (`AMAZON_LOGIN_STATION_CODE`). That is only for opening the cash overview page — `POST /api/admin/validate` always uses the `stationCode` from the frontend.
+Scrape station for login capture defaults to **TIRC** (`AMAZON_LOGIN_STATION_CODE`). That is only for opening the cash overview page during login — executive / validate calls always use the `stationCode` from the request body.
 
 ## Session management
 
-All `/api/admin/*` routes require header `x-admin-key: <ADMIN_API_KEY>`.
+All `/api/admin/*` routes require `x-admin-key: <ADMIN_API_KEY>`.
 
 ### Automated login (preferred)
 
@@ -76,7 +95,7 @@ npm run dev
 # POST /api/admin/session/refresh   # force re-login
 ```
 
-3. Frontend calls `POST /api/admin/validate` with `x-admin-key` and the real station (e.g. `JDBD`) — no cookie in the body; the worker uses the shared stored session.
+3. Frontend calls executive / validate APIs with `x-admin-key` — no Amazon cookie in the body; the worker uses the shared stored session.
 
 `GET /api/admin/credentials` returns a redacted preview (never the raw password).
 
@@ -90,12 +109,15 @@ If MFA / passkey blocks Puppeteer:
 
 ```http
 POST /api/admin/session
+x-admin-key: …
+Content-Type: application/json
+
 { "cookie": "…", "xApiUsageKey": "…", "uploadedBy": "…" }
 ```
 
 ### Session expiry behaviour
 
-On Amazon 401/403/404, HTML login page, or sign-in redirect:
+On Amazon 401/403/404, HTML login page, or sign-in redirect during validate:
 
 1. Mark stored session `expired`
 2. Attempt one Puppeteer re-login and retry validate
@@ -103,13 +125,18 @@ On Amazon 401/403/404, HTML login page, or sign-in redirect:
 
 ## API
 
-### Executive Reconciliation (frontend)
+### Auth
 
-Require header `x-admin-key: <ADMIN_API_KEY>` (same as other `/api/admin/*` routes).
+| Header | Required on |
+|---|---|
+| `x-admin-key` | Every `/api/admin/*` route (all Amazon data + session + credentials) |
+| — | `GET /api/health`, `GET /api/stations` only |
 
-Use these when the ops UI loads / changes station, then when the user submits cash.
+Missing/wrong key → `401 { "error": "Unauthorized", "code": "UNAUTHORIZED" }`.
 
-#### 1. Station change / open Executive Reconciliation — drivers + pending recon
+---
+
+### 1. Station change — drivers, reconciliation, expected cash
 
 ```http
 POST /api/admin/executive/driver-reconciliation
@@ -119,24 +146,58 @@ Content-Type: application/json
 { "stationCode": "JDBD", "date": "2026-08-02" }
 ```
 
-**200 response:**
+`date` is optional (defaults to today IST). `stationCode` is required and must be allowlisted.
+
+**Upstream Amazon calls**
+
+| Step | Amazon resource |
+|---|---|
+| Active drivers | `/v1/getDrivers` (`codNAWS`) |
+| Reconciliation | `/v1/getDriverReconciliation` (`codNAWS`) |
+| Expected cash | `/getDriverShipmentListDetails` (`cod`, legacy) per driver |
+
+Shipment fetches run with **concurrency 3** and **up to 3 retries** (Amazon often flaps on parallel shipment calls). Soft-fails are reported in `expectedCashWarnings` without failing the whole request.
+
+**200 response (shape)**
 
 ```jsonc
 {
   "status": "ok",
   "stationCode": "JDBD",
   "date": "2026-08-02",
-  "dateRange": { "startTime": …, "endTime": … },
-  "drivers": [ /* getDrivers / driverList */ ],
-  "driverCount": 12,
+  "dateRange": { "startTime": 0, "endTime": 0 },
+  "sessionSource": "cached",
+  "drivers": [ /* getDrivers list */ ],
+  "driverCount": 31,
   "reconciliation": [ /* getDriverReconciliation list */ ],
-  "reconciliationCount": 12
+  "reconciliationCount": 17,
+  "expectedCash": {
+    "totalReceived": 81943.5,   // sum of receivedAmount where paymentMethod === "CASH"
+    "shipmentCount": 54,
+    "byDriver": [
+      {
+        "employeeId": 2000080125595,
+        "driverName": "…",
+        "tasId": "…",
+        "totalReceived": 15383.2,
+        "shipmentCount": 12,
+        "shipments": [ /* CASH rows only */ ]
+      }
+    ],
+    "cashShipments": [ /* flat station list of CASH rows */ ]
+  },
+  "expectedCashWarnings": {   // omit / undefined when none
+    "failedDriverCount": 1,
+    "failures": [{ "employeeId": 2000080014605, "error": "…" }]
+  }
 }
 ```
 
-Call this whenever the executive selects or changes `stationCode`.
+Use `expectedCash.totalReceived` for the Expected Cash UI section.
 
-#### 2. Run SCC (for now) — station liability summary
+---
+
+### 2. Run SCC — liability summary
 
 ```http
 POST /api/admin/executive/liability-summary
@@ -146,7 +207,7 @@ Content-Type: application/json
 { "stationCode": "JDBD", "date": "2026-08-02" }
 ```
 
-**200 response:**
+Calls `/v1/getStationLiabilitySummary` and returns a UI helper check (all cash + mPOS fields ~0).
 
 ```jsonc
 {
@@ -154,8 +215,8 @@ Content-Type: application/json
   "stationCode": "JDBD",
   "date": "2026-08-02",
   "summary": {
-    "cashSummary": { "expectedAmount": {…}, "actualAmount": {…}, "shortExcessAmount": {…}, "count": 0 },
-    "mposSummary": { "amount": {…}, "count": 0 }
+    "cashSummary": { "expectedAmount": {}, "actualAmount": {}, "shortExcessAmount": {}, "count": 0 },
+    "mposSummary": { "amount": {}, "count": 0 }
   },
   "check": {
     "passed": true,
@@ -164,9 +225,11 @@ Content-Type: application/json
 }
 ```
 
-Use `check.passed` in the UI to gate SCC. If `false`, show `check.nonZeroFields`.
+Gate SCC on `check.passed`. If `false`, show `check.nonZeroFields`.
 
-#### 3. Remittance (frontend later)
+---
+
+### 3. Remittance (frontend later)
 
 ```http
 POST /api/admin/executive/remittance
@@ -175,8 +238,6 @@ Content-Type: application/json
 
 { "stationCode": "JDBD", "date": "2026-08-02" }
 ```
-
-**200 response:**
 
 ```jsonc
 {
@@ -188,13 +249,15 @@ Content-Type: application/json
 }
 ```
 
-All three require `x-admin-key` and use the **stored Amazon session**. Ensure a portal session first via `/api/admin/session/ensure` if needed.
+---
 
-### `POST /api/admin/validate`
+### 4. Full validate pipeline
 
-Requires `x-admin-key` (same as all other Amazon-backed routes).
+```http
+POST /api/admin/validate
+x-admin-key: …
+Content-Type: application/json
 
-```jsonc
 {
   "stationCode": "JDBD",
   "date": "2026-07-30",
@@ -208,23 +271,31 @@ Requires `x-admin-key` (same as all other Amazon-backed routes).
 }
 ```
 
-- **200** — `{ status: "passed", steps, runId }`
-- **409** — `{ status: "blocked", blockedAt, steps, runId }` (expected business block, e.g. pending recon)
-- **401** — missing/invalid `x-admin-key`, or Amazon session expired / login failed after refresh attempt
+Checks (stop at first unresolved failure):
 
-### Admin
+1. **pendingRecon** — every active driver's `overallPendingRecon` ≈ 0  
+2. **remittanceMatch** — business-day `CREATED`/`SUBMITTED` remittance sum equals denomination total  
+3. **liability** — liability cash + mPOS fields all ≈ 0  
+
+- **200** — `{ status: "passed", steps, runId }`
+- **409** — `{ status: "blocked", blockedAt, steps, runId }` (expected business block)
+- **401** — bad `x-admin-key`, or Amazon session expired after refresh attempt
+
+---
+
+### Admin route index
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/admin/validate` | Full cash validation pipeline (Amazon) |
+| `POST` | `/api/admin/executive/driver-reconciliation` | Drivers + recon + expected cash (station change) |
+| `POST` | `/api/admin/executive/liability-summary` | Liability + `check` (Run SCC) |
+| `POST` | `/api/admin/executive/remittance` | Remittance list |
+| `POST` | `/api/admin/validate` | Full cash validation pipeline |
 | `POST` | `/api/admin/session` | Manual cookie upload |
 | `GET` | `/api/admin/session/status` | Session + credentials summary |
 | `POST` | `/api/admin/session/ensure` | Probe / refresh if needed |
 | `POST` | `/api/admin/session/refresh` | Force Puppeteer re-login |
-| `POST` | `/api/admin/amazon/liability-summary` | Smoke-test Amazon proxy (`{ "stationCode": "TIRC" }`) |
-| `POST` | `/api/admin/executive/driver-reconciliation` | Drivers + reconciliation for station change |
-| `POST` | `/api/admin/executive/liability-summary` | Liability summary for Run SCC (frontend) |
-| `POST` | `/api/admin/executive/remittance` | Remittance list (frontend later) |
+| `POST` | `/api/admin/amazon/liability-summary` | Smoke-test liability probe |
 | `GET`/`PUT` | `/api/admin/credentials` | Portal credentials |
 | `GET` | `/api/admin/notifications?unacknowledged=true` | Owner alerts |
 | `POST` | `/api/admin/notifications/:id/ack` | Acknowledge alert |
@@ -238,41 +309,48 @@ Requires `x-admin-key` (same as all other Amazon-backed routes).
 
 ### If local `wrangler deploy` fails with `fetch failed`
 
-Your machine can auth (`wrangler whoami`) but **uploads over ~100KB are reset** on some ISP/VPN/antivirus paths. Re-login does not fix that. Use either:
+Auth can succeed while **uploads over ~100KB** are reset on some ISP/VPN paths. Use:
 
 1. **Phone hotspot** (or another network), then `npm run deploy`
-2. **GitHub Actions** (recommended on this network) — see below
+2. **GitHub Actions** (recommended) — see below
 
 ### GitHub Actions deploy
 
-1. Create an API token: [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens) → **Create Token** → template **Edit Cloudflare Workers** (needs Workers Scripts Edit + Account read).
-2. In the GitHub repo → **Settings → Secrets and variables → Actions**, add:
-   - `CLOUDFLARE_API_TOKEN` — the token from step 1
-   - `CLOUDFLARE_ACCOUNT_ID` — `0c1359d755dc6714ead89c7c8e9eb9d1`
-3. Push to `main` or run **Actions → Deploy Worker → Run workflow**.
+Workflow: `.github/workflows/deploy.yml` (runs on push to `main` and `workflow_dispatch`).
+
+1. Create an API token: [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens) → **Edit Cloudflare Workers**
+2. Repo **Settings → Secrets and variables → Actions → Repository secrets**:
+   - `CLOUDFLARE_API_TOKEN`
+   - `CLOUDFLARE_ACCOUNT_ID` = `0c1359d755dc6714ead89c7c8e9eb9d1`
+3. Push to `main` or **Actions → Deploy Worker → Run workflow**
 
 Local deploy (when the network allows):
 
 ```bash
-npm run deploy          # production (top-level env)
+npm run deploy          # uses wrangler deploy --env=""
 npm run deploy -- --env staging
 npm run tail
 ```
 
-### Worker secrets (set once per environment)
+### Worker secrets (once per environment)
 
-Never commit these; never put them in `wrangler.toml` `[vars]`:
+Never commit these; never put them in `wrangler.toml` `[vars]`.
+
+From `.dev.vars` (does not print values):
+
+```bash
+node scripts/sync-secrets.mjs --env ""
+```
+
+Or one at a time:
 
 ```bash
 npx wrangler secret put SUPABASE_URL --env=""
 npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY --env=""
 npx wrangler secret put ADMIN_API_KEY --env=""
-
-# Portal bootstrap (optional if you only use PUT /api/admin/credentials)
 npx wrangler secret put AMAZON_PORTAL_EMAIL --env=""
 npx wrangler secret put AMAZON_PORTAL_PASSWORD --env=""
-
-# Optional email alerts
+# optional email alerts:
 npx wrangler secret put RESEND_API_KEY --env=""
 npx wrangler secret put OWNER_NOTIFICATION_EMAIL --env=""
 npx wrangler secret put NOTIFICATION_FROM_EMAIL --env=""
@@ -284,7 +362,7 @@ Requirements:
 - **Do not set `[limits].cpu_ms` on Free** — Cloudflare rejects it (`code: 100328`)
 - Schema applied in Supabase
 
-After first deploy, call `POST /api/admin/session/ensure` (or store credentials + refresh) before validate traffic.
+After first deploy, call `POST /api/admin/session/ensure` before executive / validate traffic.
 
 ## Configuration (`wrangler.toml` `[vars]`)
 
@@ -302,3 +380,4 @@ After first deploy, call `POST /api/admin/session/ensure` (or store credentials 
 - `x-admin-key` is a shared secret, not per-user auth.
 - CORS is currently `origin: '*'` — lock down in `src/index.ts` before production.
 - Amount equality uses `AMOUNT_EPSILON = 0.01` (`src/utils/number.ts`).
+- Expected-cash shipment calls can intermittently fail under load; retries + soft-fail warnings cover most cases. Prefer `expectedCash.totalReceived` and treat `expectedCashWarnings` as partial data.

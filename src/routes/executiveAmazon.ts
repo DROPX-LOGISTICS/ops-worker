@@ -1,11 +1,112 @@
 import type { Context } from 'hono';
-import type { Env } from '../types';
-import { ValidationInputError } from '../errors';
+import type { AmazonAuthContext, Driver, Env, ShipmentSettlementDetail } from '../types';
+import { ProviderError, ValidationInputError } from '../errors';
 import { ALLOWED_STATIONS } from '../config';
-import { getBusinessDayRange } from '../utils/dateRange';
+import { getBusinessDayRange, type DateRange } from '../utils/dateRange';
 import { createStationDataProvider } from '../providers/factory';
+import type { StationDataProvider } from '../providers/StationDataProvider';
 import { ensureValidAmazonSession } from '../session/ensureSession';
 import { checkLiability } from '../validators/liability';
+import { buildExpectedCash } from '../utils/expectedCash';
+
+/** Keep low — Amazon often 401/500s when many shipment calls run at once. */
+const SHIPMENT_FETCH_CONCURRENCY = 3;
+const SHIPMENT_FETCH_RETRIES = 3;
+
+async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results: R[] = new Array(items.length);
+  let next = 0;
+
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]!);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableShipmentError(err: unknown): boolean {
+  if (!(err instanceof ProviderError)) return false;
+  // Same cookie works for getDrivers/recon — intermittent 401/403/502 on shipment
+  // calls are almost always concurrency/rate noise, not a real session death.
+  return (
+    err.code === 'AMAZON_SESSION_EXPIRED' ||
+    err.code === 'PROVIDER_UPSTREAM_ERROR' ||
+    err.code === 'PROVIDER_NETWORK_ERROR' ||
+    err.status === 401 ||
+    err.status === 403 ||
+    err.status === 502
+  );
+}
+
+async function fetchShipmentsForDriverWithRetry(
+  provider: StationDataProvider,
+  stationCode: string,
+  range: DateRange,
+  employeeId: number,
+  auth: AmazonAuthContext,
+): Promise<ShipmentSettlementDetail[]> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= SHIPMENT_FETCH_RETRIES; attempt++) {
+    try {
+      return await provider.getDriverShipmentListDetails(stationCode, range, employeeId, auth);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < SHIPMENT_FETCH_RETRIES && isRetryableShipmentError(err)) {
+        await sleep(200 * attempt);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
+async function fetchShipmentsByDriver(
+  provider: StationDataProvider,
+  stationCode: string,
+  range: DateRange,
+  drivers: Driver[],
+  auth: AmazonAuthContext,
+): Promise<{ map: Map<number, ShipmentSettlementDetail[]>; failures: { employeeId: number; error: string }[] }> {
+  const failures: { employeeId: number; error: string }[] = [];
+  const lists = await mapPool(drivers, SHIPMENT_FETCH_CONCURRENCY, async (driver) => {
+    try {
+      return await fetchShipmentsForDriverWithRetry(
+        provider,
+        stationCode,
+        range,
+        driver.employeeId,
+        auth,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`shipment fetch failed for employeeId=${driver.employeeId}:`, message);
+      failures.push({
+        employeeId: driver.employeeId,
+        error: message.includes('session expired')
+          ? 'Amazon shipment call failed after retries (likely rate-limit; session still used for drivers/recon)'
+          : message.slice(0, 200),
+      });
+      return [] as ShipmentSettlementDetail[];
+    }
+  });
+
+  const map = new Map<number, ShipmentSettlementDetail[]>();
+  drivers.forEach((driver, i) => {
+    map.set(driver.employeeId, lists[i] ?? []);
+  });
+  return { map, failures };
+}
 
 interface StationDateBody {
   stationCode?: string;
@@ -68,7 +169,7 @@ async function requireAmazonSession(c: Context<{ Bindings: Env }>, triggeredBy: 
 
 /**
  * Executive Reconciliation / station change:
- * getDrivers → getDriverReconciliation, return both payloads.
+ * getDrivers → getDriverReconciliation + per-driver shipment cash totals.
  *
  * POST /api/admin/executive/driver-reconciliation
  * Header: x-admin-key
@@ -82,12 +183,14 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
 
   const provider = createStationDataProvider(c.env);
   const drivers = await provider.getActiveDrivers(stationCode, session.auth);
-  const reconciliation = await provider.getDriverReconciliation(
-    stationCode,
-    range,
-    drivers,
-    session.auth,
-  );
+
+  // Reconciliation is one bulk call; shipments are per-driver — run both in parallel.
+  const [reconciliation, shipmentResult] = await Promise.all([
+    provider.getDriverReconciliation(stationCode, range, drivers, session.auth),
+    fetchShipmentsByDriver(provider, stationCode, range, drivers, session.auth),
+  ]);
+
+  const expectedCash = buildExpectedCash(drivers, shipmentResult.map);
 
   return c.json({
     status: 'ok',
@@ -99,6 +202,10 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
     driverCount: drivers.length,
     reconciliation,
     reconciliationCount: reconciliation.length,
+    expectedCash,
+    expectedCashWarnings: shipmentResult.failures.length
+      ? { failedDriverCount: shipmentResult.failures.length, failures: shipmentResult.failures }
+      : undefined,
   });
 }
 

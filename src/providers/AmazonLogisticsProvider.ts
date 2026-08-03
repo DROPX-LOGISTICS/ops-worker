@@ -4,7 +4,9 @@ import type {
   DriverReconciliationEntry,
   LiabilitySummary,
   RemittanceEntry,
+  ShipmentSettlementDetail,
   AmazonAuthContext,
+  Money,
 } from '../types';
 import type { DateRange } from '../utils/dateRange';
 import { ProviderError } from '../errors';
@@ -36,6 +38,48 @@ interface RemittanceResponse {
   remittanceList: RemittanceEntry[];
 }
 
+interface RawShipmentRow {
+  barcode?: string | null;
+  barCode?: string | null;
+  shipmentNo?: string | null;
+  employeeId?: number;
+  employeeName?: string | null;
+  driverName?: string | null;
+  paymentMethod?: string;
+  shipmentStatus?: string | null;
+  shipmentType?: string | null;
+  updateDate?: string | null;
+  receivableAmount?: Money;
+  receivedAmount?: Money;
+  remittanceCode?: string | null;
+  reconciled?: boolean | null;
+}
+
+interface ShipmentListResponse {
+  shipmentSettlementDetailList?: RawShipmentRow[];
+}
+
+function emptyMoney(): Money {
+  return { unit: '', value: 0 };
+}
+
+function normaliseShipment(row: RawShipmentRow): ShipmentSettlementDetail {
+  return {
+    barcode: row.barCode ?? row.barcode ?? null,
+    shipmentNo: row.shipmentNo ?? null,
+    employeeId: row.employeeId ?? 0,
+    driverName: row.driverName ?? row.employeeName ?? null,
+    paymentMethod: (row.paymentMethod ?? '').toUpperCase(),
+    shipmentStatus: row.shipmentStatus ?? null,
+    shipmentType: row.shipmentType ?? null,
+    updateDate: row.updateDate ?? null,
+    receivableAmount: row.receivableAmount ?? emptyMoney(),
+    receivedAmount: row.receivedAmount ?? emptyMoney(),
+    remittanceCode: row.remittanceCode ?? null,
+    reconciled: row.reconciled ?? null,
+  };
+}
+
 /**
  * StationDataProvider implementation backed by the internal Amazon
  * Logistics station-portal proxy gateway
@@ -51,9 +95,11 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     processName: string,
     requestBody: TReq,
     auth: AmazonAuthContext,
+    options?: { refererPath?: string },
   ): Promise<TRes> {
     const envelope: ProxyEnvelope<TReq> = { resourcePath, httpMethod: 'POST', processName, requestBody };
     const proxyUrl = `${this.baseUrl}/station/proxyapigateway/data`;
+    const refererPath = options?.refererPath ?? '/station/dashboard/cashoverview';
 
     let res: Response;
     try {
@@ -69,7 +115,7 @@ export class AmazonLogisticsProvider implements StationDataProvider {
           accept: '*/*',
           'accept-language': 'en-US,en;q=0.9',
           origin: this.baseUrl,
-          referer: `${this.baseUrl}/station/dashboard/cashoverview`,
+          referer: `${this.baseUrl}${refererPath}`,
           'user-agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
           cookie: auth.cookie,
@@ -111,8 +157,11 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
+      const snippet = text.trimStart().startsWith('<')
+        ? `HTML error page (${text.includes('Unknown Error') ? 'Unknown Error' : 'non-JSON'})`
+        : text.slice(0, 200);
       throw new ProviderError(
-        `Amazon proxy call failed (${resourcePath}): ${res.status} ${text}`.trim(),
+        `Amazon proxy call failed (${resourcePath}): ${res.status} ${snippet}`.trim(),
         502,
         'PROVIDER_UPSTREAM_ERROR',
       );
@@ -189,6 +238,28 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       providerInfo: entry.providerInfo,
       paymentInfo: entry.paymentInfo,
     }));
+  }
+
+  async getDriverShipmentListDetails(
+    stationCode: string,
+    range: DateRange,
+    employeeId: number,
+    auth: AmazonAuthContext,
+  ): Promise<ShipmentSettlementDetail[]> {
+    const { resourcePath, processName } = AMAZON_RESOURCES.getDriverShipmentListDetails;
+    // Legacy `cod` body uses driverInfo.employeeId (matches portal Network tab).
+    const data = await this.callProxy<
+      { stationCode: string; dateRange: DateRange; driverInfo: { employeeId: number } },
+      ShipmentListResponse
+    >(
+      resourcePath,
+      processName,
+      { stationCode, dateRange: range, driverInfo: { employeeId } },
+      auth,
+      { refererPath: '/station/dashboard/driverreconciliation' },
+    );
+
+    return (data.shipmentSettlementDetailList ?? []).map(normaliseShipment);
   }
 
   async getStationLiabilitySummary(

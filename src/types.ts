@@ -100,6 +100,39 @@ export interface RemittanceEntry {
   variance: Money;
 }
 
+/** Normalised row from getDriverShipmentListDetails (v1 / legacy). */
+export interface ShipmentSettlementDetail {
+  barcode: string | null;
+  shipmentNo: string | null;
+  employeeId: number;
+  driverName: string | null;
+  paymentMethod: string;
+  shipmentStatus: string | null;
+  shipmentType: string | null;
+  updateDate: string | null;
+  receivableAmount: Money;
+  receivedAmount: Money;
+  remittanceCode: string | null;
+  reconciled: boolean | null;
+}
+
+export interface ExpectedCashByDriver {
+  employeeId: number;
+  driverName: string;
+  tasId: string | null;
+  totalReceived: number;
+  shipmentCount: number;
+  shipments: ShipmentSettlementDetail[];
+}
+
+export interface ExpectedCashSummary {
+  /** Sum of receivedAmount for paymentMethod === CASH across all drivers. */
+  totalReceived: number;
+  shipmentCount: number;
+  byDriver: ExpectedCashByDriver[];
+  cashShipments: ShipmentSettlementDetail[];
+}
+
 // ---------------------------------------------------------------------------
 // API contract (frontend <-> worker)
 // ---------------------------------------------------------------------------
