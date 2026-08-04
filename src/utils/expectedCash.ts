@@ -24,7 +24,7 @@ function dateOnly(lastUpdatedTime: string | null): string | null {
   return part || null;
 }
 
-function toShipment(pkg: AgeingPackageDetail, employeeId: number): ExpectedCashShipment {
+function toShipment(pkg: AgeingPackageDetail, employeeId: number | null): ExpectedCashShipment {
   return {
     barcode: pkg.trackingId,
     shipmentNo: pkg.orderingOrderId,
@@ -38,9 +38,20 @@ function toShipment(pkg: AgeingPackageDetail, employeeId: number): ExpectedCashS
   };
 }
 
+type Bucket = {
+  employeeId: number | null;
+  driverName: string;
+  tasId: string | null;
+  mappedToActiveDriver: boolean;
+  shipments: ExpectedCashShipment[];
+};
+
 /**
  * Ageing CASH packages → expectedCash for the frontend.
- * Filters on actualPaymentMethod === CASH; maps driverId → drivers[].tasId.
+ * Filters on actualPaymentMethod === CASH.
+ * Matches driverId → drivers[].tasId when possible; unmatched driverIds
+ * (e.g. A2S80CSWXBRVK9 not in getDrivers) are still returned with
+ * mappedToActiveDriver: false so the UI can collect that cash.
  */
 export function buildExpectedCashFromAgeing(
   drivers: Driver[],
@@ -52,37 +63,62 @@ export function buildExpectedCashFromAgeing(
     if (d.tasId) byTasId.set(d.tasId, d);
   }
 
-  const buckets = new Map<string, { driver: Driver; shipments: ExpectedCashShipment[] }>();
+  const buckets = new Map<string, Bucket>();
 
   for (const pkg of cashPackages) {
-    const driver = pkg.driverId ? byTasId.get(pkg.driverId) : undefined;
-    if (!driver || !pkg.driverId) continue;
-
-    let bucket = buckets.get(pkg.driverId);
+    const driverId = (pkg.driverId ?? '').trim();
+    const bucketKey = driverId || '__unassigned__';
+    let bucket = buckets.get(bucketKey);
     if (!bucket) {
-      bucket = { driver, shipments: [] };
-      buckets.set(pkg.driverId, bucket);
+      const driver = driverId ? byTasId.get(driverId) : undefined;
+      if (driver) {
+        bucket = {
+          employeeId: driver.employeeId,
+          driverName: driver.driverName,
+          tasId: driver.tasId,
+          mappedToActiveDriver: true,
+          shipments: [],
+        };
+      } else if (driverId) {
+        bucket = {
+          employeeId: null,
+          driverName: `Unmapped driver (${driverId})`,
+          tasId: driverId,
+          mappedToActiveDriver: false,
+          shipments: [],
+        };
+      } else {
+        bucket = {
+          employeeId: null,
+          driverName: 'Unassigned driver',
+          tasId: null,
+          mappedToActiveDriver: false,
+          shipments: [],
+        };
+      }
+      buckets.set(bucketKey, bucket);
     }
-    bucket.shipments.push(toShipment(pkg, driver.employeeId));
+    bucket.shipments.push(toShipment(pkg, bucket.employeeId));
   }
 
   const byDriver: ExpectedCashByDriver[] = [];
   let totalReceived = 0;
   let shipmentCount = 0;
 
-  for (const { driver, shipments } of buckets.values()) {
+  for (const bucket of buckets.values()) {
     let driverTotal = 0;
-    for (const s of shipments) driverTotal += s.receivedAmount.value;
+    for (const s of bucket.shipments) driverTotal += s.receivedAmount.value;
     driverTotal = round2(driverTotal);
     totalReceived += driverTotal;
-    shipmentCount += shipments.length;
+    shipmentCount += bucket.shipments.length;
     byDriver.push({
-      employeeId: driver.employeeId,
-      driverName: driver.driverName,
-      tasId: driver.tasId,
+      employeeId: bucket.employeeId,
+      driverName: bucket.driverName,
+      tasId: bucket.tasId,
+      mappedToActiveDriver: bucket.mappedToActiveDriver,
       totalReceived: driverTotal,
-      shipmentCount: shipments.length,
-      shipments,
+      shipmentCount: bucket.shipments.length,
+      shipments: bucket.shipments,
     });
   }
 

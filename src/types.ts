@@ -118,7 +118,8 @@ export interface AgeingPackageDetail {
 export interface ExpectedCashShipment {
   barcode: string;
   shipmentNo: string | null;
-  employeeId: number;
+  /** Null when ageing driverId is not in getDrivers. */
+  employeeId: number | null;
   /** Mapped from ageing `actualPaymentMethod`. */
   paymentMethod: string;
   shipmentStatus: string | null;
@@ -132,16 +133,20 @@ export interface ExpectedCashShipment {
 }
 
 export interface ExpectedCashByDriver {
-  employeeId: number;
+  /** Null when ageing driverId is not in getDrivers. */
+  employeeId: number | null;
   driverName: string;
+  /** Ageing driverId / getDrivers tasId. */
   tasId: string | null;
+  /** False when driverId was not in the active drivers list. */
+  mappedToActiveDriver: boolean;
   totalReceived: number;
   shipmentCount: number;
   shipments: ExpectedCashShipment[];
 }
 
 export interface ExpectedCashSummary {
-  /** Sum of receivedAmount.value for mapped CASH packages. */
+  /** Sum of receivedAmount.value for all CASH packages (mapped + unmapped). */
   totalReceived: number;
   shipmentCount: number;
   byDriver: ExpectedCashByDriver[];

@@ -249,50 +249,104 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     }));
   }
 
+  /**
+   * Ageing export-style fetch: one status per request, size 10000, paginate
+   * via startingIndex. Combining statuses without size defaults to ~1000 and
+   * drops cash rows.
+   */
   async getAgeingDrillDownData(
     stationCode: string,
     date: string,
     auth: AmazonAuthContext,
   ): Promise<AgeingPackageDetail[]> {
     const { resourcePath, processName, httpMethod } = AMAZON_RESOURCES.getAgeingDrillDownData;
-    // Match ageing UI: UTC midnight → next UTC midnight (unix seconds).
     const lastUpdatedRange = getUtcCalendarDayRangeSeconds(date);
+    const pageSize = 10000;
+    const filters = [
+      {
+        __type: 'TermFilter:http://internal.amazon.com/coral/com.amazon.oculusservice.model.filter/',
+        filterMap: { SHIPMENT_TYPE: ['Delivery', 'MFNPickup'] },
+      },
+      {
+        __type: 'RangeFilter:http://internal.amazon.com/coral/com.amazon.oculusservice.model.filter/',
+        filterMap: {},
+      },
+    ];
 
-    const data = await this.callProxy<
-      {
-        nodeId: string;
-        packageStatusMap: Record<string, unknown[]>;
-        filters: Array<{ __type: string; filterMap: Record<string, unknown> }>;
-        lastUpdatedRange: { startTime: number; endTime: number };
-      },
-      AgeingDrillDownResponse
-    >(
-      resourcePath,
-      processName,
-      {
-        nodeId: stationCode,
-        packageStatusMap: {
-          Delivered: [],
-          'Cash At Station': [],
-          'Cash With Associate': [],
-        },
-        filters: [
-          {
-            __type: 'TermFilter:http://internal.amazon.com/coral/com.amazon.oculusservice.model.filter/',
-            filterMap: { SHIPMENT_TYPE: ['Delivery', 'MFNPickup'] },
-          },
-          {
-            __type: 'RangeFilter:http://internal.amazon.com/coral/com.amazon.oculusservice.model.filter/',
-            filterMap: {},
-          },
-        ],
-        lastUpdatedRange,
-      },
-      auth,
-      { refererPath: '/station/dashboard/ageing', httpMethod },
+    // Match ageing CSV export: separate call per status (not one combined map).
+    const statuses = ['Delivered', 'Cash At Station', 'Cash With Associate'] as const;
+
+    const pages = await Promise.all(
+      statuses.map((status) =>
+        this.fetchAgeingStatusPages(
+          resourcePath,
+          processName,
+          httpMethod,
+          stationCode,
+          status,
+          filters,
+          lastUpdatedRange,
+          pageSize,
+          auth,
+        ),
+      ),
     );
 
-    return (data.packageResultList ?? []).map(normaliseAgeingPackage);
+    const byTrackingId = new Map<string, AgeingPackageDetail>();
+    for (const row of pages.flat()) {
+      if (!row.trackingId || byTrackingId.has(row.trackingId)) continue;
+      byTrackingId.set(row.trackingId, row);
+    }
+    return [...byTrackingId.values()];
+  }
+
+  private async fetchAgeingStatusPages(
+    resourcePath: string,
+    processName: string,
+    httpMethod: string | undefined,
+    stationCode: string,
+    status: string,
+    filters: Array<{ __type: string; filterMap: Record<string, unknown> }>,
+    lastUpdatedRange: { startTime: number; endTime: number },
+    pageSize: number,
+    auth: AmazonAuthContext,
+  ): Promise<AgeingPackageDetail[]> {
+    const out: AgeingPackageDetail[] = [];
+    let startingIndex = 0;
+
+    for (;;) {
+      const data = await this.callProxy<
+        {
+          nodeId: string;
+          packageStatusMap: Record<string, unknown[]>;
+          filters: Array<{ __type: string; filterMap: Record<string, unknown> }>;
+          lastUpdatedRange: { startTime: number; endTime: number };
+          size: number;
+          startingIndex: number;
+        },
+        AgeingDrillDownResponse
+      >(
+        resourcePath,
+        processName,
+        {
+          nodeId: stationCode,
+          packageStatusMap: { [status]: [] },
+          filters,
+          lastUpdatedRange,
+          size: pageSize,
+          startingIndex,
+        },
+        auth,
+        { refererPath: '/station/dashboard/ageing', httpMethod },
+      );
+
+      const batch = (data.packageResultList ?? []).map(normaliseAgeingPackage);
+      out.push(...batch);
+      if (batch.length < pageSize) break;
+      startingIndex += pageSize;
+    }
+
+    return out;
   }
 
   async getStationLiabilitySummary(

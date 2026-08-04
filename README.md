@@ -154,9 +154,9 @@ Content-Type: application/json
 |---|---|
 | Active drivers | `/v1/getDrivers` (`codNAWS`) |
 | Reconciliation | `/v1/getDriverReconciliation` (`codNAWS`) |
-| Expected cash | `/os/getDrillDownData` (`oculus`) — `lastUpdatedRange` = UTC calendar day in unix seconds (e.g. `2026-08-02` → `1785628800`–`1785715200`) |
+| Expected cash | `/os/getDrillDownData` (`oculus`) — per status (`Delivered`, `Cash At Station`, `Cash With Associate`), `size: 10000` + `startingIndex` pagination; UTC day in unix seconds |
 
-**Expected cash** filters `actualPaymentMethod === "CASH"`, maps `driverId` → `drivers[].tasId`, and returns:
+**Expected cash** filters `actualPaymentMethod === "CASH"`, maps `driverId` → `drivers[].tasId` when possible, and **still includes** unmatched driverIds (`mappedToActiveDriver: false`). Returns:
 
 ```jsonc
 {
@@ -167,21 +167,19 @@ Content-Type: application/json
       "employeeId": 2000080125595,
       "driverName": "Prakash Thakur / DROP / …",
       "tasId": "ALIY31TUBQNTG",
+      "mappedToActiveDriver": true,
       "totalReceived": 15383.2,
       "shipmentCount": 12,
-      "shipments": [
-        {
-          "barcode": "371285119030",
-          "shipmentNo": "406-6293200-5760313",
-          "employeeId": 2000080125595,
-          "paymentMethod": "CASH",
-          "shipmentStatus": "CASH_AT_STATION",
-          "shipmentType": "Delivery",
-          "updateDate": "2026-08-02",
-          "receivableAmount": { "value": 2408.1 },
-          "receivedAmount": { "value": 2847.23 }
-        }
-      ]
+      "shipments": [ /* … */ ]
+    },
+    {
+      "employeeId": null,
+      "driverName": "Unmapped driver (A2S80CSWXBRVK9)",
+      "tasId": "A2S80CSWXBRVK9",
+      "mappedToActiveDriver": false,
+      "totalReceived": 1200.5,
+      "shipmentCount": 2,
+      "shipments": [ /* … */ ]
     }
   ]
 }
@@ -191,7 +189,7 @@ Content-Type: application/json
 |---|---|
 | `barcode` | `trackingId` |
 | `shipmentNo` | `orderingOrderId` |
-| `employeeId` | matched driver's `employeeId` (`tasId` = `driverId`) |
+| `employeeId` | matched driver's `employeeId`, or `null` if unmapped |
 | `paymentMethod` | `actualPaymentMethod` |
 | `shipmentStatus` | `state` |
 | `shipmentType` | `packageType` |
@@ -199,7 +197,7 @@ Content-Type: application/json
 | `receivableAmount.value` | `orderAmount` (÷100 → INR) |
 | `receivedAmount.value` | `receivableAmount` (÷100 → INR) |
 
-Use `expectedCash.totalReceived` / `expectedCash.byDriver` in the UI.
+Use `expectedCash.totalReceived` / `expectedCash.byDriver` in the UI. Unmapped rows use `tasId` as the associate id.
 
 ---
 
@@ -386,4 +384,4 @@ After first deploy, call `POST /api/admin/session/ensure` before executive / val
 - `x-admin-key` is a shared secret, not per-user auth.
 - CORS is currently `origin: '*'` — lock down in `src/index.ts` before production.
 - Amount equality uses `AMOUNT_EPSILON = 0.01` (`src/utils/number.ts`).
-- Expected cash comes from the ageing dashboard (`/os/getDrillDownData`). Only packages with `actualPaymentMethod === CASH` matched to an active driver's `tasId` are included; amounts are converted from paise → INR.
+- Expected cash comes from the ageing dashboard (`/os/getDrillDownData`), fetched per status with `size: 10000` + `startingIndex` pagination (same as CSV export). Packages with `actualPaymentMethod === CASH` are included even when `driverId` is not in getDrivers (`mappedToActiveDriver: false`); amounts are converted from paise → INR.
