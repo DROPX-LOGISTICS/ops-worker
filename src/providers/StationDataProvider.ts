@@ -3,7 +3,7 @@ import type {
   DriverReconciliationEntry,
   LiabilitySummary,
   RemittanceEntry,
-  ShipmentSettlementDetail,
+  AgeingPackageDetail,
   AmazonAuthContext,
 } from '../types';
 import type { DateRange } from '../utils/dateRange';
@@ -28,12 +28,15 @@ export interface StationDataProvider {
     auth: AmazonAuthContext,
   ): Promise<DriverReconciliationEntry[]>;
 
-  getDriverShipmentListDetails(
+  /**
+   * Ageing dashboard drill-down (`/os/getDrillDownData`).
+   * `date` is YYYY-MM-DD; uses UTC calendar-day lastUpdatedRange (unix seconds).
+   */
+  getAgeingDrillDownData(
     stationCode: string,
-    range: DateRange,
-    employeeId: number,
+    date: string,
     auth: AmazonAuthContext,
-  ): Promise<ShipmentSettlementDetail[]>;
+  ): Promise<AgeingPackageDetail[]>;
 
   getStationLiabilitySummary(stationCode: string, range: DateRange, auth: AmazonAuthContext): Promise<LiabilitySummary>;
 

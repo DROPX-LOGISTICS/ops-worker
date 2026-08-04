@@ -19,10 +19,11 @@ export const ALLOWED_STATIONS: ReadonlySet<string> = new Set([
 export const AMAZON_RESOURCES = {
   getDrivers: { resourcePath: '/v1/getDrivers', processName: 'codNAWS' },
   getDriverReconciliation: { resourcePath: '/v1/getDriverReconciliation', processName: 'codNAWS' },
-  getDriverShipmentListDetails: {
-    // Portal driver-recon page uses legacy `cod` for this path (v1 often 500s).
-    resourcePath: '/getDriverShipmentListDetails',
-    processName: 'cod',
+  /** Ageing dashboard drill-down (expected cash). Times in request are unix seconds. */
+  getAgeingDrillDownData: {
+    resourcePath: '/os/getDrillDownData',
+    processName: 'oculus',
+    httpMethod: 'post' as const,
   },
   getStationLiabilitySummary: { resourcePath: '/v1/getStationLiabilitySummary', processName: 'codNAWS' },
   getRemittance: { resourcePath: '/v1/getRemittance', processName: 'tmSystem' },

@@ -100,20 +100,35 @@ export interface RemittanceEntry {
   variance: Money;
 }
 
-/** Normalised row from getDriverShipmentListDetails (v1 / legacy). */
-export interface ShipmentSettlementDetail {
-  barcode: string | null;
+/** Internal row from ageing `/os/getDrillDownData` (before frontend shipment mapping). */
+export interface AgeingPackageDetail {
+  trackingId: string;
+  driverId: string | null;
+  paymentMethod: string;
+  actualPaymentMethod: string | null;
+  receivableAmount: number;
+  orderAmount: number | null;
+  state: string | null;
+  packageType: string | null;
+  lastUpdatedTime: string | null;
+  orderingOrderId: string | null;
+}
+
+/** Frontend shipment row inside expectedCash (legacy shape). */
+export interface ExpectedCashShipment {
+  barcode: string;
   shipmentNo: string | null;
   employeeId: number;
-  driverName: string | null;
+  /** Mapped from ageing `actualPaymentMethod`. */
   paymentMethod: string;
   shipmentStatus: string | null;
   shipmentType: string | null;
+  /** Date only from ageing lastUpdatedTime (YYYY-MM-DD). */
   updateDate: string | null;
-  receivableAmount: Money;
-  receivedAmount: Money;
-  remittanceCode: string | null;
-  reconciled: boolean | null;
+  /** Order amount from ageing. */
+  receivableAmount: { value: number };
+  /** Receivable amount from ageing (cash expected). */
+  receivedAmount: { value: number };
 }
 
 export interface ExpectedCashByDriver {
@@ -122,15 +137,14 @@ export interface ExpectedCashByDriver {
   tasId: string | null;
   totalReceived: number;
   shipmentCount: number;
-  shipments: ShipmentSettlementDetail[];
+  shipments: ExpectedCashShipment[];
 }
 
 export interface ExpectedCashSummary {
-  /** Sum of receivedAmount for paymentMethod === CASH across all drivers. */
+  /** Sum of receivedAmount.value for mapped CASH packages. */
   totalReceived: number;
   shipmentCount: number;
   byDriver: ExpectedCashByDriver[];
-  cashShipments: ShipmentSettlementDetail[];
 }
 
 // ---------------------------------------------------------------------------

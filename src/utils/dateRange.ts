@@ -37,3 +37,23 @@ export function getBusinessDayRange(dateStr: string, startHourIst = 0): DateRang
 
   return { startTime, endTime };
 }
+
+/**
+ * Ageing dashboard (`/os/getDrillDownData`) uses unix-seconds UTC midnight
+ * bounds for the selected calendar date — e.g. for 2026-08-02:
+ *   startTime=1785628800 (2026-08-02T00:00:00Z)
+ *   endTime=1785715200   (2026-08-03T00:00:00Z, exclusive)
+ * Do not reuse IST business-day ms ranges here.
+ */
+export function getUtcCalendarDayRangeSeconds(dateStr: string): DateRange {
+  const match = DATE_RE.exec(dateStr);
+  if (!match) {
+    throw new Error(`Invalid date "${dateStr}", expected YYYY-MM-DD`);
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const startTime = Math.floor(Date.UTC(year, month - 1, day) / 1000);
+  const endTime = startTime + 24 * 60 * 60;
+  return { startTime, endTime };
+}

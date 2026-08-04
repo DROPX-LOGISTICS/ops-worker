@@ -154,46 +154,52 @@ Content-Type: application/json
 |---|---|
 | Active drivers | `/v1/getDrivers` (`codNAWS`) |
 | Reconciliation | `/v1/getDriverReconciliation` (`codNAWS`) |
-| Expected cash | `/getDriverShipmentListDetails` (`cod`, legacy) per driver |
+| Expected cash | `/os/getDrillDownData` (`oculus`) — `lastUpdatedRange` = UTC calendar day in unix seconds (e.g. `2026-08-02` → `1785628800`–`1785715200`) |
 
-Shipment fetches run with **concurrency 3** and **up to 3 retries** (Amazon often flaps on parallel shipment calls). Soft-fails are reported in `expectedCashWarnings` without failing the whole request.
-
-**200 response (shape)**
+**Expected cash** filters `actualPaymentMethod === "CASH"`, maps `driverId` → `drivers[].tasId`, and returns:
 
 ```jsonc
 {
-  "status": "ok",
-  "stationCode": "JDBD",
-  "date": "2026-08-02",
-  "dateRange": { "startTime": 0, "endTime": 0 },
-  "sessionSource": "cached",
-  "drivers": [ /* getDrivers list */ ],
-  "driverCount": 31,
-  "reconciliation": [ /* getDriverReconciliation list */ ],
-  "reconciliationCount": 17,
-  "expectedCash": {
-    "totalReceived": 81943.5,   // sum of receivedAmount where paymentMethod === "CASH"
-    "shipmentCount": 54,
-    "byDriver": [
-      {
-        "employeeId": 2000080125595,
-        "driverName": "…",
-        "tasId": "…",
-        "totalReceived": 15383.2,
-        "shipmentCount": 12,
-        "shipments": [ /* CASH rows only */ ]
-      }
-    ],
-    "cashShipments": [ /* flat station list of CASH rows */ ]
-  },
-  "expectedCashWarnings": {   // omit / undefined when none
-    "failedDriverCount": 1,
-    "failures": [{ "employeeId": 2000080014605, "error": "…" }]
-  }
+  "totalReceived": 81943.5,
+  "shipmentCount": 54,
+  "byDriver": [
+    {
+      "employeeId": 2000080125595,
+      "driverName": "Prakash Thakur / DROP / …",
+      "tasId": "ALIY31TUBQNTG",
+      "totalReceived": 15383.2,
+      "shipmentCount": 12,
+      "shipments": [
+        {
+          "barcode": "371285119030",
+          "shipmentNo": "406-6293200-5760313",
+          "employeeId": 2000080125595,
+          "paymentMethod": "CASH",
+          "shipmentStatus": "CASH_AT_STATION",
+          "shipmentType": "Delivery",
+          "updateDate": "2026-08-02",
+          "receivableAmount": { "value": 2408.1 },
+          "receivedAmount": { "value": 2847.23 }
+        }
+      ]
+    }
+  ]
 }
 ```
 
-Use `expectedCash.totalReceived` for the Expected Cash UI section.
+| Shipment field | Ageing source |
+|---|---|
+| `barcode` | `trackingId` |
+| `shipmentNo` | `orderingOrderId` |
+| `employeeId` | matched driver's `employeeId` (`tasId` = `driverId`) |
+| `paymentMethod` | `actualPaymentMethod` |
+| `shipmentStatus` | `state` |
+| `shipmentType` | `packageType` |
+| `updateDate` | date of `lastUpdatedTime` (`YYYY-MM-DD`) |
+| `receivableAmount.value` | `orderAmount` (÷100 → INR) |
+| `receivedAmount.value` | `receivableAmount` (÷100 → INR) |
+
+Use `expectedCash.totalReceived` / `expectedCash.byDriver` in the UI.
 
 ---
 
@@ -380,4 +386,4 @@ After first deploy, call `POST /api/admin/session/ensure` before executive / val
 - `x-admin-key` is a shared secret, not per-user auth.
 - CORS is currently `origin: '*'` — lock down in `src/index.ts` before production.
 - Amount equality uses `AMOUNT_EPSILON = 0.01` (`src/utils/number.ts`).
-- Expected-cash shipment calls can intermittently fail under load; retries + soft-fail warnings cover most cases. Prefer `expectedCash.totalReceived` and treat `expectedCashWarnings` as partial data.
+- Expected cash comes from the ageing dashboard (`/os/getDrillDownData`). Only packages with `actualPaymentMethod === CASH` matched to an active driver's `tasId` are included; amounts are converted from paise → INR.

@@ -4,17 +4,17 @@ import type {
   DriverReconciliationEntry,
   LiabilitySummary,
   RemittanceEntry,
-  ShipmentSettlementDetail,
+  AgeingPackageDetail,
   AmazonAuthContext,
-  Money,
 } from '../types';
 import type { DateRange } from '../utils/dateRange';
+import { getUtcCalendarDayRangeSeconds } from '../utils/dateRange';
 import { ProviderError } from '../errors';
 import { AMAZON_RESOURCES } from '../config';
 
 interface ProxyEnvelope<TReq> {
   resourcePath: string;
-  httpMethod: 'POST';
+  httpMethod: string;
   processName: string;
   requestBody: TReq;
 }
@@ -38,45 +38,49 @@ interface RemittanceResponse {
   remittanceList: RemittanceEntry[];
 }
 
-interface RawShipmentRow {
-  barcode?: string | null;
-  barCode?: string | null;
-  shipmentNo?: string | null;
-  employeeId?: number;
-  employeeName?: string | null;
-  driverName?: string | null;
-  paymentMethod?: string;
-  shipmentStatus?: string | null;
-  shipmentType?: string | null;
-  updateDate?: string | null;
-  receivableAmount?: Money;
-  receivedAmount?: Money;
-  remittanceCode?: string | null;
-  reconciled?: boolean | null;
+interface RawAgeingPackage {
+  trackingId?: string;
+  driverId?: string | null;
+  paymentMethod?: string | null;
+  actualPaymentMethod?: string | null;
+  receivableAmount?: string | number | null;
+  orderAmount?: string | number | null;
+  state?: string | null;
+  packageType?: string | null;
+  lastScanBy?: string | null;
+  lastUpdatedTime?: string | null;
+  orderingOrderId?: string | null;
+  stationCode?: string | null;
+  dspName?: string | null;
 }
 
-interface ShipmentListResponse {
-  shipmentSettlementDetailList?: RawShipmentRow[];
+interface AgeingDrillDownResponse {
+  packageResultList?: RawAgeingPackage[];
 }
 
-function emptyMoney(): Money {
-  return { unit: '', value: 0 };
+function parseAmount(value: string | number | null | undefined): number {
+  if (value === null || value === undefined || value === '') return 0;
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : 0;
 }
 
-function normaliseShipment(row: RawShipmentRow): ShipmentSettlementDetail {
+function normaliseAgeingPackage(row: RawAgeingPackage): AgeingPackageDetail {
   return {
-    barcode: row.barCode ?? row.barcode ?? null,
-    shipmentNo: row.shipmentNo ?? null,
-    employeeId: row.employeeId ?? 0,
-    driverName: row.driverName ?? row.employeeName ?? null,
+    trackingId: row.trackingId ?? '',
+    driverId: row.driverId ?? null,
     paymentMethod: (row.paymentMethod ?? '').toUpperCase(),
-    shipmentStatus: row.shipmentStatus ?? null,
-    shipmentType: row.shipmentType ?? null,
-    updateDate: row.updateDate ?? null,
-    receivableAmount: row.receivableAmount ?? emptyMoney(),
-    receivedAmount: row.receivedAmount ?? emptyMoney(),
-    remittanceCode: row.remittanceCode ?? null,
-    reconciled: row.reconciled ?? null,
+    actualPaymentMethod: row.actualPaymentMethod
+      ? String(row.actualPaymentMethod).toUpperCase()
+      : null,
+    receivableAmount: parseAmount(row.receivableAmount),
+    orderAmount:
+      row.orderAmount === null || row.orderAmount === undefined || row.orderAmount === ''
+        ? null
+        : parseAmount(row.orderAmount),
+    state: row.state ?? null,
+    packageType: row.packageType ?? null,
+    lastUpdatedTime: row.lastUpdatedTime ?? null,
+    orderingOrderId: row.orderingOrderId ?? null,
   };
 }
 
@@ -95,9 +99,14 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     processName: string,
     requestBody: TReq,
     auth: AmazonAuthContext,
-    options?: { refererPath?: string },
+    options?: { refererPath?: string; httpMethod?: string },
   ): Promise<TRes> {
-    const envelope: ProxyEnvelope<TReq> = { resourcePath, httpMethod: 'POST', processName, requestBody };
+    const envelope: ProxyEnvelope<TReq> = {
+      resourcePath,
+      httpMethod: options?.httpMethod ?? 'POST',
+      processName,
+      requestBody,
+    };
     const proxyUrl = `${this.baseUrl}/station/proxyapigateway/data`;
     const refererPath = options?.refererPath ?? '/station/dashboard/cashoverview';
 
@@ -240,26 +249,50 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     }));
   }
 
-  async getDriverShipmentListDetails(
+  async getAgeingDrillDownData(
     stationCode: string,
-    range: DateRange,
-    employeeId: number,
+    date: string,
     auth: AmazonAuthContext,
-  ): Promise<ShipmentSettlementDetail[]> {
-    const { resourcePath, processName } = AMAZON_RESOURCES.getDriverShipmentListDetails;
-    // Legacy `cod` body uses driverInfo.employeeId (matches portal Network tab).
+  ): Promise<AgeingPackageDetail[]> {
+    const { resourcePath, processName, httpMethod } = AMAZON_RESOURCES.getAgeingDrillDownData;
+    // Match ageing UI: UTC midnight → next UTC midnight (unix seconds).
+    const lastUpdatedRange = getUtcCalendarDayRangeSeconds(date);
+
     const data = await this.callProxy<
-      { stationCode: string; dateRange: DateRange; driverInfo: { employeeId: number } },
-      ShipmentListResponse
+      {
+        nodeId: string;
+        packageStatusMap: Record<string, unknown[]>;
+        filters: Array<{ __type: string; filterMap: Record<string, unknown> }>;
+        lastUpdatedRange: { startTime: number; endTime: number };
+      },
+      AgeingDrillDownResponse
     >(
       resourcePath,
       processName,
-      { stationCode, dateRange: range, driverInfo: { employeeId } },
+      {
+        nodeId: stationCode,
+        packageStatusMap: {
+          Delivered: [],
+          'Cash At Station': [],
+          'Cash With Associate': [],
+        },
+        filters: [
+          {
+            __type: 'TermFilter:http://internal.amazon.com/coral/com.amazon.oculusservice.model.filter/',
+            filterMap: { SHIPMENT_TYPE: ['Delivery', 'MFNPickup'] },
+          },
+          {
+            __type: 'RangeFilter:http://internal.amazon.com/coral/com.amazon.oculusservice.model.filter/',
+            filterMap: {},
+          },
+        ],
+        lastUpdatedRange,
+      },
       auth,
-      { refererPath: '/station/dashboard/driverreconciliation' },
+      { refererPath: '/station/dashboard/ageing', httpMethod },
     );
 
-    return (data.shipmentSettlementDetailList ?? []).map(normaliseShipment);
+    return (data.packageResultList ?? []).map(normaliseAgeingPackage);
   }
 
   async getStationLiabilitySummary(
