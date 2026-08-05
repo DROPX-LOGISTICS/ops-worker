@@ -85,6 +85,18 @@ export interface LiabilitySummary {
   };
 }
 
+export interface RemittanceStationVarianceItem {
+  amount: Money;
+  reason: string;
+  type: string;
+}
+
+export interface RemittanceStationVariance {
+  transactionId: string | null;
+  isVerified: boolean | null;
+  stationVarianceList: RemittanceStationVarianceItem[];
+}
+
 export interface RemittanceEntry {
   remittanceCode: string | null;
   remittanceId: string;
@@ -98,6 +110,8 @@ export interface RemittanceEntry {
   actualAmount: Money;
   paymentMethod: string;
   variance: Money;
+  ttLink?: string | null;
+  stationVariance?: RemittanceStationVariance | null;
 }
 
 /** Internal row from ageing `/os/getDrillDownData` (before frontend shipment mapping). */

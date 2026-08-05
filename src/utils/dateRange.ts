@@ -39,6 +39,21 @@ export function getBusinessDayRange(dateStr: string, startHourIst = 0): DateRang
 }
 
 /**
+ * Bank-deposits `/getRemittance` portal call uses a ~16-day lookback window
+ * ending at the selected business day (many dates returned; callers filter
+ * by creationDate). Matches observed traffic:
+ *   startTime=1784505600000, endTime=1785888000000 → 16 days.
+ */
+export function getRemittanceFetchRange(dateStr: string, startHourIst = 0): DateRange {
+  const day = getBusinessDayRange(dateStr, startHourIst);
+  const LOOKBACK_DAYS = 16;
+  return {
+    startTime: day.endTime - LOOKBACK_DAYS * MS_PER_DAY + 1,
+    endTime: day.endTime,
+  };
+}
+
+/**
  * Ageing dashboard (`/os/getDrillDownData`) uses unix-seconds UTC midnight
  * bounds for the selected calendar date — e.g. for 2026-08-02:
  *   startTime=1785628800 (2026-08-02T00:00:00Z)

@@ -26,7 +26,11 @@ export const AMAZON_RESOURCES = {
     httpMethod: 'post' as const,
   },
   getStationLiabilitySummary: { resourcePath: '/v1/getStationLiabilitySummary', processName: 'codNAWS' },
-  getRemittance: { resourcePath: '/v1/getRemittance', processName: 'tmSystem' },
+  /** Bank deposits page uses legacy `cod` (richer remittanceId / stationVariance). */
+  getRemittance: {
+    resourcePath: '/getRemittance',
+    processName: 'cod',
+  },
 } as const;
 
 /** Tolerance below which a monetary/count value is treated as zero. */

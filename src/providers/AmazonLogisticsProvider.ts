@@ -12,6 +12,10 @@ import { getUtcCalendarDayRangeSeconds } from '../utils/dateRange';
 import { ProviderError } from '../errors';
 import { AMAZON_RESOURCES } from '../config';
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+/** Portal bank-deposits remittance lookback (~16 days). */
+const REMITTANCE_LOOKBACK_DAYS = 16;
+
 interface ProxyEnvelope<TReq> {
   resourcePath: string;
   httpMethod: string;
@@ -34,8 +38,46 @@ interface DriverReconciliationResponse {
   driverReconciliationList: RawReconEntry[];
 }
 
+interface RawRemittanceEntry {
+  remittanceCode?: string | null;
+  remittanceId?: string;
+  creationDate?: number;
+  lastUpdated?: number;
+  submissionDate?: number | null;
+  createdBy?: string;
+  submittedBy?: string | null;
+  status?: string;
+  expectedAmount?: RemittanceEntry['expectedAmount'];
+  actualAmount?: RemittanceEntry['actualAmount'];
+  paymentMethod?: string;
+  variance?: RemittanceEntry['variance'];
+  ttLink?: string | null;
+  stationVariance?: RemittanceEntry['stationVariance'];
+}
+
 interface RemittanceResponse {
-  remittanceList: RemittanceEntry[];
+  remittanceList?: RawRemittanceEntry[];
+}
+
+function normaliseRemittance(row: RawRemittanceEntry): RemittanceEntry {
+  const submissionDate =
+    row.submissionDate == null || row.submissionDate === 0 ? null : Number(row.submissionDate);
+  return {
+    remittanceCode: row.remittanceCode ?? null,
+    remittanceId: row.remittanceId ?? '',
+    creationDate: Number(row.creationDate ?? 0),
+    lastUpdated: Number(row.lastUpdated ?? 0),
+    submissionDate,
+    createdBy: row.createdBy ?? '',
+    submittedBy: row.submittedBy ?? null,
+    status: row.status ?? '',
+    expectedAmount: row.expectedAmount ?? { unit: 'INR', value: 0 },
+    actualAmount: row.actualAmount ?? { unit: 'INR', value: 0 },
+    paymentMethod: row.paymentMethod ?? 'CASH',
+    variance: row.variance ?? { unit: 'INR', value: 0 },
+    ttLink: row.ttLink ?? null,
+    stationVariance: row.stationVariance ?? null,
+  };
 }
 
 interface RawAgeingPackage {
@@ -365,12 +407,18 @@ export class AmazonLogisticsProvider implements StationDataProvider {
 
   async getRemittances(stationCode: string, range: DateRange, auth: AmazonAuthContext): Promise<RemittanceEntry[]> {
     const { resourcePath, processName } = AMAZON_RESOURCES.getRemittance;
+    // Portal bank-deposits uses a multi-day lookback; filter by creationDate downstream.
+    const fetchRange: DateRange = {
+      startTime: range.endTime - REMITTANCE_LOOKBACK_DAYS * MS_PER_DAY + 1,
+      endTime: range.endTime,
+    };
     const data = await this.callProxy<{ stationCode: string; dateRange: DateRange }, RemittanceResponse>(
       resourcePath,
       processName,
-      { stationCode, dateRange: range },
+      { stationCode, dateRange: fetchRange },
       auth,
+      { refererPath: '/station/dashboard/bankdeposits' },
     );
-    return data.remittanceList ?? [];
+    return (data.remittanceList ?? []).map(normaliseRemittance);
   }
 }

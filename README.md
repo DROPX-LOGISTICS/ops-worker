@@ -16,7 +16,7 @@ All Amazon-backed routes require header **`x-admin-key: <ADMIN_API_KEY>`**. Publ
 |---|---|
 | Open / change station | `POST /api/admin/executive/driver-reconciliation` |
 | Run SCC | `POST /api/admin/executive/liability-summary` |
-| Remittance (later) | `POST /api/admin/executive/remittance` |
+| Remittance | `POST /api/admin/executive/remittance` |
 
 Always send:
 
@@ -233,25 +233,36 @@ Gate SCC on `check.passed`. If `false`, show `check.nonZeroFields`.
 
 ---
 
-### 3. Remittance (frontend later)
+### 3. Remittance (bank deposits / day check)
 
 ```http
 POST /api/admin/executive/remittance
 x-admin-key: …
 Content-Type: application/json
 
-{ "stationCode": "JDBD", "date": "2026-08-02" }
+{ "stationCode": "JDBD", "date": "2026-08-03" }
 ```
+
+Upstream: Amazon `/getRemittance` (`cod`) with a ~16-day lookback (same as bank-deposits UI). Rows are filtered to `creationDate` on the requested IST business day, then split by status.
 
 ```jsonc
 {
   "status": "ok",
   "stationCode": "JDBD",
-  "date": "2026-08-02",
-  "remittances": [ /* getRemittance / remittanceList */ ],
-  "remittanceCount": 3
+  "date": "2026-08-03",
+  "dateRange": { "startTime": 0, "endTime": 0 },
+  "remittanceTotalCash": 62014.55,
+  "created": [ /* status === CREATED */ ],
+  "createdCount": 2,
+  "createdTotal": 7061,
+  "submitted": [ /* status === SUBMITTED — includes remittanceCode */ ],
+  "submittedCount": 1,
+  "submittedTotal": 54953.55,
+  "remittanceCodes": ["AC544759"]
 }
 ```
+
+Use `remittanceTotalCash` for the day cash total. Use `created` / `submitted` in the UI. Keep `remittanceCodes` for later deposit matching.
 
 ---
 

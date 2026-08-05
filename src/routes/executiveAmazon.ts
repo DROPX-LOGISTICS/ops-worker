@@ -135,12 +135,13 @@ export async function liabilitySummaryExecutiveHandler(c: Context<{ Bindings: En
 }
 
 /**
- * Remittance list (frontend later / optional now):
- * getRemittance for the station/business day.
+ * Remittance check for a station/business day.
+ * Calls Amazon `/getRemittance` (cod), filters by creationDate on the
+ * requested date, and splits CREATED vs SUBMITTED.
  *
  * POST /api/admin/executive/remittance
  * Header: x-admin-key
- * { "stationCode": "JDBD", "date": "2026-08-02" }
+ * { "stationCode": "JDBD", "date": "2026-08-03" }
  */
 export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
   const { stationCode, date, range } = await parseStationDate(c);
@@ -149,7 +150,27 @@ export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
   if (!session.ok) return session.response;
 
   const provider = createStationDataProvider(c.env);
-  const remittances = await provider.getRemittances(stationCode, range, session.auth);
+  const all = await provider.getRemittances(stationCode, range, session.auth);
+
+  // Amazon returns many days; keep only rows created on the requested business day.
+  const dayRemittances = all.filter(
+    (r) => r.creationDate >= range.startTime && r.creationDate <= range.endTime,
+  );
+
+  const created = dayRemittances.filter((r) => r.status === 'CREATED');
+  const submitted = dayRemittances.filter((r) => r.status === 'SUBMITTED');
+
+  const remittanceCodes = [
+    ...new Set(
+      submitted
+        .map((r) => (r.remittanceCode ?? '').trim())
+        .filter(Boolean),
+    ),
+  ];
+
+  const createdTotal = created.reduce((sum, r) => sum + (r.actualAmount?.value ?? 0), 0);
+  const submittedTotal = submitted.reduce((sum, r) => sum + (r.actualAmount?.value ?? 0), 0);
+  const remittanceTotalCash = Math.round((createdTotal + submittedTotal) * 100) / 100;
 
   return c.json({
     status: 'ok',
@@ -157,7 +178,13 @@ export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
     date,
     dateRange: range,
     sessionSource: session.sessionSource,
-    remittances,
-    remittanceCount: remittances.length,
+    remittanceTotalCash,
+    created,
+    createdCount: created.length,
+    createdTotal: Math.round(createdTotal * 100) / 100,
+    submitted,
+    submittedCount: submitted.length,
+    submittedTotal: Math.round(submittedTotal * 100) / 100,
+    remittanceCodes,
   });
 }
