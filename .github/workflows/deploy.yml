@@ -21,8 +21,41 @@ jobs:
 
       - run: npm run typecheck
 
-      - name: Deploy to Cloudflare Workers
-        run: npx wrangler deploy --env=""
+      # Wrangler prefers account_id in wrangler.toml over CLOUDFLARE_ACCOUNT_ID.
+      # Sync toml from the repo secret so CI always targets the intended account.
+      - name: Sync Cloudflare account_id
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::Missing repository secret CLOUDFLARE_API_TOKEN. Create an API token under the Dropx Cloudflare account (Edit Cloudflare Workers) and add it as a repo secret."
+            exit 1
+          fi
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Missing repository secret CLOUDFLARE_ACCOUNT_ID. Expected Dropx account ab2dba58727809ae8bf0a21edb5fe7b8 (tech@dropxlogistics.com)."
+            exit 1
+          fi
+          if grep -q '^account_id' wrangler.toml; then
+            sed -i "s/^account_id = .*/account_id = \"${CLOUDFLARE_ACCOUNT_ID}\"/" wrangler.toml
+          else
+            sed -i "1a account_id = \"${CLOUDFLARE_ACCOUNT_ID}\"" wrangler.toml
+          fi
+          echo "Deploy target account_id=${CLOUDFLARE_ACCOUNT_ID}"
+
+      # whoami redacts account IDs; use it only to confirm the token works.
+      # If deploy still returns auth 10000, the token is for a different Cloudflare
+      # account than CLOUDFLARE_ACCOUNT_ID — recreate the token under Dropx
+      # (tech@dropxlogistics.com / ab2dba58727809ae8bf0a21edb5fe7b8).
+      - name: Verify Cloudflare credentials
+        run: npx wrangler whoami
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy --env=""
