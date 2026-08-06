@@ -38,6 +38,12 @@ export function getBusinessDayRange(dateStr: string, startHourIst = 0): DateRang
   return { startTime, endTime };
 }
 
+/** Portal bank-deposits `/getRemittance` lookback (~16 days). */
+export const REMITTANCE_LOOKBACK_DAYS = 16;
+
+/** Max ageing calendar-day span when resolving remittance pile-ups. */
+export const AGEING_PENDING_LOOKBACK_DAYS = 45;
+
 /**
  * Bank-deposits `/getRemittance` portal call uses a ~16-day lookback window
  * ending at the selected business day (many dates returned; callers filter
@@ -46,11 +52,69 @@ export function getBusinessDayRange(dateStr: string, startHourIst = 0): DateRang
  */
 export function getRemittanceFetchRange(dateStr: string, startHourIst = 0): DateRange {
   const day = getBusinessDayRange(dateStr, startHourIst);
-  const LOOKBACK_DAYS = 16;
   return {
-    startTime: day.endTime - LOOKBACK_DAYS * MS_PER_DAY + 1,
+    startTime: day.endTime - REMITTANCE_LOOKBACK_DAYS * MS_PER_DAY + 1,
     endTime: day.endTime,
   };
+}
+
+/**
+ * Remittance portal fetch ending at max(anchor, today IST) so next-day
+ * deposits after the request date remain visible within the 16-day window.
+ */
+export function getRemittancePortalFetchRange(
+  anchorYmd: string,
+  todayYmd: string,
+  startHourIst = 0,
+): DateRange {
+  const endYmd = maxYmd(anchorYmd, todayYmd);
+  return getRemittanceFetchRange(endYmd, startHourIst);
+}
+
+export function todayIstYmd(nowMs = Date.now()): string {
+  const ist = new Date(nowMs + IST_OFFSET_MINUTES * 60 * 1000);
+  const y = ist.getUTCFullYear();
+  const m = String(ist.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(ist.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function addDaysYmd(dateStr: string, days: number): string {
+  const match = DATE_RE.exec(dateStr);
+  if (!match) {
+    throw new Error(`Invalid date "${dateStr}", expected YYYY-MM-DD`);
+  }
+  const utc = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  const shifted = new Date(utc + days * MS_PER_DAY);
+  const y = shifted.getUTCFullYear();
+  const m = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/** IST calendar YYYY-MM-DD from an epoch-ms timestamp. */
+export function ymdFromIstEpochMs(ms: number): string {
+  return todayIstYmd(ms);
+}
+
+export function minYmd(a: string, b: string): string {
+  return a <= b ? a : b;
+}
+
+export function maxYmd(a: string, b: string): string {
+  return a >= b ? a : b;
+}
+
+/** Whole calendar days between two YYYY-MM-DD values (IST dates as civil days). */
+export function daysBetweenYmd(fromYmd: string, toYmd: string): number {
+  const a = DATE_RE.exec(fromYmd);
+  const b = DATE_RE.exec(toYmd);
+  if (!a || !b) {
+    throw new Error(`Invalid date range "${fromYmd}" → "${toYmd}"`);
+  }
+  const fromUtc = Date.UTC(Number(a[1]), Number(a[2]) - 1, Number(a[3]));
+  const toUtc = Date.UTC(Number(b[1]), Number(b[2]) - 1, Number(b[3]));
+  return Math.round((toUtc - fromUtc) / MS_PER_DAY);
 }
 
 /**
@@ -71,4 +135,17 @@ export function getUtcCalendarDayRangeSeconds(dateStr: string): DateRange {
   const startTime = Math.floor(Date.UTC(year, month - 1, day) / 1000);
   const endTime = startTime + 24 * 60 * 60;
   return { startTime, endTime };
+}
+
+/**
+ * Inclusive multi-day UTC calendar range in unix seconds for ageing.
+ * `toYmdInclusive` maps to exclusive end = next UTC midnight.
+ */
+export function getUtcCalendarRangeSeconds(fromYmd: string, toYmdInclusive: string): DateRange {
+  const from = getUtcCalendarDayRangeSeconds(fromYmd);
+  const to = getUtcCalendarDayRangeSeconds(toYmdInclusive);
+  if (to.startTime < from.startTime) {
+    throw new Error(`Invalid ageing range: ${fromYmd} → ${toYmdInclusive}`);
+  }
+  return { startTime: from.startTime, endTime: to.endTime };
 }

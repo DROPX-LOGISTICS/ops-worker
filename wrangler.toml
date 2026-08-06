@@ -2,7 +2,7 @@ name = "cash-recon-worker"
 main = "src/index.ts"
 compatibility_date = "2024-09-25"
 compatibility_flags = ["nodejs_compat"]
-account_id = "0c1359d755dc6714ead89c7c8e9eb9d1"
+account_id = "ab2dba58727809ae8bf0a21edb5fe7b8"
 
 # Browser Rendering — required for POST /api/admin/session/refresh (Puppeteer login).
 # Docs: https://developers.cloudflare.com/browser-run/puppeteer/

@@ -3,6 +3,7 @@ import type {
   DriverReconciliationEntry,
   LiabilitySummary,
   RemittanceEntry,
+  RemittanceDetails,
   AgeingPackageDetail,
   AmazonAuthContext,
 } from '../types';
@@ -30,15 +31,24 @@ export interface StationDataProvider {
 
   /**
    * Ageing dashboard drill-down (`/os/getDrillDownData`).
-   * `date` is YYYY-MM-DD; uses UTC calendar-day lastUpdatedRange (unix seconds).
+   * Dates are YYYY-MM-DD; uses UTC calendar-day lastUpdatedRange (unix seconds).
+   * When `toDate` is omitted, fetches a single calendar day.
    */
   getAgeingDrillDownData(
     stationCode: string,
-    date: string,
+    fromDate: string,
     auth: AmazonAuthContext,
+    toDate?: string,
   ): Promise<AgeingPackageDetail[]>;
 
   getStationLiabilitySummary(stationCode: string, range: DateRange, auth: AmazonAuthContext): Promise<LiabilitySummary>;
 
+  /**
+   * Bank-deposits remittance list. `range` is the business-day filter hint;
+   * the provider fetches a portal lookback ending at max(range end, today).
+   */
   getRemittances(stationCode: string, range: DateRange, auth: AmazonAuthContext): Promise<RemittanceEntry[]>;
+
+  /** Shipment-level remittance details for pending trackingId diff. */
+  getRemittanceDetailsForExcel(remittanceId: string, auth: AmazonAuthContext): Promise<RemittanceDetails>;
 }

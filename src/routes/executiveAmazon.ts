@@ -2,24 +2,20 @@ import type { Context } from 'hono';
 import type { Env } from '../types';
 import { ValidationInputError } from '../errors';
 import { ALLOWED_STATIONS } from '../config';
-import { getBusinessDayRange } from '../utils/dateRange';
+import { getBusinessDayRange, todayIstYmd } from '../utils/dateRange';
 import { createStationDataProvider } from '../providers/factory';
 import { ensureValidAmazonSession } from '../session/ensureSession';
 import { checkLiability } from '../validators/liability';
 import { buildExpectedCashFromAgeing } from '../utils/expectedCash';
+import {
+  reconcileRemittancePending,
+} from '../services/remittancePending';
+import { round2 } from '../utils/number';
 
 interface StationDateBody {
   stationCode?: string;
   /** YYYY-MM-DD business date in IST. Defaults to today (IST). */
   date?: string;
-}
-
-function todayIstYmd(): string {
-  const ist = new Date(Date.now() + (5 * 60 + 30) * 60 * 1000);
-  const y = ist.getUTCFullYear();
-  const m = String(ist.getUTCMonth() + 1).padStart(2, '0');
-  const d = String(ist.getUTCDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
 }
 
 async function parseStationDate(
@@ -149,8 +145,8 @@ export async function liabilitySummaryExecutiveHandler(c: Context<{ Bindings: En
 
 /**
  * Remittance check for a station/business day.
- * Calls Amazon `/getRemittance` (cod), filters by creationDate on the
- * requested date, and splits CREATED vs SUBMITTED.
+ * Builds a day-by-day cash ledger: expected vs remittance, exact trackingId
+ * clearance from remittance details, and forwarded/pending drivers+shipments.
  *
  * POST /api/admin/executive/remittance
  * Header: x-admin-key
@@ -158,14 +154,19 @@ export async function liabilitySummaryExecutiveHandler(c: Context<{ Bindings: En
  */
 export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
   const { stationCode, date, range } = await parseStationDate(c);
+  const startHourIst = Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '0');
 
   const session = await requireAmazonSession(c, `executive-remittance:${stationCode}`, stationCode);
   if (!session.ok) return session.response;
 
   const provider = createStationDataProvider(c.env);
-  const all = await provider.getRemittances(stationCode, range, session.auth);
 
-  // Amazon returns many days; keep only rows created on the requested business day.
+  const [drivers, all, sameDayPackages] = await Promise.all([
+    provider.getActiveDrivers(stationCode, session.auth),
+    provider.getRemittances(stationCode, range, session.auth),
+    provider.getAgeingDrillDownData(stationCode, date, session.auth),
+  ]);
+
   const dayRemittances = all.filter(
     (r) => r.creationDate >= range.startTime && r.creationDate <= range.endTime,
   );
@@ -181,9 +182,26 @@ export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
     ),
   ];
 
-  const createdTotal = created.reduce((sum, r) => sum + (r.actualAmount?.value ?? 0), 0);
-  const submittedTotal = submitted.reduce((sum, r) => sum + (r.actualAmount?.value ?? 0), 0);
-  const remittanceTotalCash = Math.round((createdTotal + submittedTotal) * 100) / 100;
+  const createdTotal = round2(created.reduce((sum, r) => sum + (r.actualAmount?.value ?? 0), 0));
+  const submittedTotal = round2(submitted.reduce((sum, r) => sum + (r.actualAmount?.value ?? 0), 0));
+  const remittanceTotalCash = round2(createdTotal + submittedTotal);
+
+  const sameDayExpectedCash = buildExpectedCashFromAgeing(drivers, sameDayPackages);
+  const sameDayActive = dayRemittances.filter(
+    (r) => r.status === 'CREATED' || r.status === 'SUBMITTED',
+  );
+
+  const ledgerResult = await reconcileRemittancePending({
+    stationCode,
+    requestDate: date,
+    startHourIst,
+    drivers,
+    allRemittances: all,
+    sameDayExpectedCash,
+    sameDayRemittances: sameDayActive,
+    provider,
+    auth: session.auth,
+  });
 
   return c.json({
     status: 'ok',
@@ -195,10 +213,12 @@ export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
     remittanceTotalCash,
     created,
     createdCount: created.length,
-    createdTotal: Math.round(createdTotal * 100) / 100,
+    createdTotal,
     submitted,
     submittedCount: submitted.length,
-    submittedTotal: Math.round(submittedTotal * 100) / 100,
+    submittedTotal,
     remittanceCodes,
+    summary: ledgerResult.summary,
+    ledger: ledgerResult.ledger,
   });
 }

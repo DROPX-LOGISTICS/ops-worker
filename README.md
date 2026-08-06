@@ -383,7 +383,7 @@ Workflow: `.github/workflows/deploy.yml` (runs on push to `main` and `workflow_d
 1. Create an API token: [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens) → **Edit Cloudflare Workers**
 2. Repo **Settings → Secrets and variables → Actions → Repository secrets**:
    - `CLOUDFLARE_API_TOKEN`
-   - `CLOUDFLARE_ACCOUNT_ID` = `0c1359d755dc6714ead89c7c8e9eb9d1`
+   - `CLOUDFLARE_ACCOUNT_ID` = `ab2dba58727809ae8bf0a21edb5fe7b8` (tech@dropxlogistics.com)
 3. Push to `main` or **Actions → Deploy Worker → Run workflow**
 
 Local deploy (when the network allows):

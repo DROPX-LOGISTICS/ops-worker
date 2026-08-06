@@ -4,17 +4,22 @@ import type {
   DriverReconciliationEntry,
   LiabilitySummary,
   RemittanceEntry,
+  RemittanceDetails,
+  RemittanceShipmentDetail,
   AgeingPackageDetail,
   AmazonAuthContext,
 } from '../types';
 import type { DateRange } from '../utils/dateRange';
-import { getUtcCalendarDayRangeSeconds } from '../utils/dateRange';
+import {
+  getUtcCalendarDayRangeSeconds,
+  getUtcCalendarRangeSeconds,
+  getRemittancePortalFetchRange,
+  todayIstYmd,
+  ymdFromIstEpochMs,
+} from '../utils/dateRange';
 import { ProviderError } from '../errors';
 import { AMAZON_RESOURCES } from '../config';
-
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-/** Portal bank-deposits remittance lookback (~16 days). */
-const REMITTANCE_LOOKBACK_DAYS = 16;
+import { round2 } from '../utils/number';
 
 interface ProxyEnvelope<TReq> {
   resourcePath: string;
@@ -298,11 +303,14 @@ export class AmazonLogisticsProvider implements StationDataProvider {
    */
   async getAgeingDrillDownData(
     stationCode: string,
-    date: string,
+    fromDate: string,
     auth: AmazonAuthContext,
+    toDate?: string,
   ): Promise<AgeingPackageDetail[]> {
     const { resourcePath, processName, httpMethod } = AMAZON_RESOURCES.getAgeingDrillDownData;
-    const lastUpdatedRange = getUtcCalendarDayRangeSeconds(date);
+    const lastUpdatedRange = toDate
+      ? getUtcCalendarRangeSeconds(fromDate, toDate)
+      : getUtcCalendarDayRangeSeconds(fromDate);
     const pageSize = 10000;
     const filters = [
       {
@@ -407,11 +415,9 @@ export class AmazonLogisticsProvider implements StationDataProvider {
 
   async getRemittances(stationCode: string, range: DateRange, auth: AmazonAuthContext): Promise<RemittanceEntry[]> {
     const { resourcePath, processName } = AMAZON_RESOURCES.getRemittance;
-    // Portal bank-deposits uses a multi-day lookback; filter by creationDate downstream.
-    const fetchRange: DateRange = {
-      startTime: range.endTime - REMITTANCE_LOOKBACK_DAYS * MS_PER_DAY + 1,
-      endTime: range.endTime,
-    };
+    // End at max(request day, today) so next-day deposits stay visible.
+    const anchorYmd = ymdFromIstEpochMs(range.endTime);
+    const fetchRange = getRemittancePortalFetchRange(anchorYmd, todayIstYmd());
     const data = await this.callProxy<{ stationCode: string; dateRange: DateRange }, RemittanceResponse>(
       resourcePath,
       processName,
@@ -420,5 +426,54 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       { refererPath: '/station/dashboard/bankdeposits' },
     );
     return (data.remittanceList ?? []).map(normaliseRemittance);
+  }
+
+  async getRemittanceDetailsForExcel(
+    remittanceId: string,
+    auth: AmazonAuthContext,
+  ): Promise<RemittanceDetails> {
+    const { resourcePath, processName } = AMAZON_RESOURCES.getRemittanceDetailsForExcel;
+    const data = await this.callProxy<
+      { remittanceId: string },
+      {
+        remittanceDetails?: {
+          remittanceAmount?: number;
+          actualAmount?: number;
+          shipmentInformationList?: Array<{
+            trackingId?: string;
+            amount?: number;
+            associateName?: string | null;
+            station?: string | null;
+            statusUpdateTimeStamp?: string | null;
+            depositCode?: string | null;
+          }>;
+        };
+      }
+    >(
+      resourcePath,
+      processName,
+      { remittanceId },
+      auth,
+      { refererPath: '/station/dashboard/bankdeposits' },
+    );
+
+    const details = data.remittanceDetails ?? {};
+    const shipments: RemittanceShipmentDetail[] = (details.shipmentInformationList ?? [])
+      .map((row) => ({
+        trackingId: (row.trackingId ?? '').trim(),
+        amount: round2(Number(row.amount ?? 0) || 0),
+        associateName: row.associateName ?? null,
+        station: row.station ?? null,
+        statusUpdateTimeStamp: row.statusUpdateTimeStamp ?? null,
+        depositCode: row.depositCode ?? null,
+      }))
+      .filter((s) => s.trackingId);
+
+    return {
+      remittanceId,
+      remittanceAmount: round2(Number(details.remittanceAmount ?? 0) || 0),
+      actualAmount: round2(Number(details.actualAmount ?? 0) || 0),
+      shipments,
+    };
   }
 }

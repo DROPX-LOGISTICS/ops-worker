@@ -166,6 +166,111 @@ export interface ExpectedCashSummary {
   byDriver: ExpectedCashByDriver[];
 }
 
+/** Shipment row from `/v1/getRemittanceDetailsForExcel`. */
+export interface RemittanceShipmentDetail {
+  trackingId: string;
+  amount: number;
+  associateName: string | null;
+  station: string | null;
+  statusUpdateTimeStamp: string | null;
+  depositCode: string | null;
+}
+
+export interface RemittanceDetails {
+  remittanceId: string;
+  remittanceAmount: number;
+  actualAmount: number;
+  shipments: RemittanceShipmentDetail[];
+}
+
+export type RemittanceMatchStatus = 'MATCHED' | 'MATCHED_WINDOW' | 'PENDING' | 'UNRESOLVED';
+export type RemittanceMatchMode = 'sameDay' | 'forwardDeposit' | 'backwardPileUp' | 'none';
+
+export interface RemittanceMatchInfo {
+  status: RemittanceMatchStatus;
+  mode: RemittanceMatchMode;
+  window: { from: string; to: string };
+  sameDayExpectedCashTotal: number;
+  sameDayRemittanceTotalCash: number;
+  expectedCashTotal: number;
+  remittanceTotalCash: number;
+  limitedByRemittanceWindow: boolean;
+  analysisRemittances: RemittanceEntry[];
+}
+
+export interface PendingLiabilityByDriver {
+  driverName: string;
+  tasId: string | null;
+  employeeId: number | null;
+  pendingAmount: number;
+  shipments: ExpectedCashShipment[];
+}
+
+export interface PendingLiabilityByDay {
+  date: string;
+  pendingAmount: number;
+  byDriver: PendingLiabilityByDriver[];
+}
+
+export interface PendingLiabilities {
+  pendingTotal: number;
+  byDay: PendingLiabilityByDay[];
+}
+
+/** Exact trackingId clearance status for an ageing cash shipment. */
+export type LedgerShipmentStatus = 'clearedSameDay' | 'forwarded' | 'pending';
+
+export interface RemittanceLedgerShipment {
+  trackingId: string;
+  shipmentNo: string | null;
+  pendingAmount: number;
+  keptOnDate: string;
+  clearedOnDate: string | null;
+  keptDays: number | null;
+  status: LedgerShipmentStatus;
+  remittanceId: string | null;
+  remittanceCode: string | null;
+}
+
+export interface RemittanceLedgerDriver {
+  driverName: string;
+  tasId: string | null;
+  employeeId: number | null;
+  amount: number;
+  shipmentCount: number;
+  shipments: RemittanceLedgerShipment[];
+}
+
+export interface RemittanceLedgerDay {
+  date: string;
+  expectedCashTotal: number;
+  remittanceTotalCash: number;
+  /** expectedCashTotal - remittanceTotalCash (can be negative if remittance exceeds ageing). */
+  shortAmount: number;
+  carryForwardIn: number;
+  /** Amount from this day's ageing still open after same-day remittance match (forwarded + still pending). */
+  carryForwardOut: number;
+  clearedSameDayAmount: number;
+  /** Ageing cash from this day cleared later by exact trackingId. */
+  forwardedAmount: number;
+  /** Ageing cash from this day with no remittance trackingId match yet. */
+  stillPendingAmount: number;
+  /** Prior-day forwarded cash cleared by remittance details on this day. */
+  clearedFromPriorAmount: number;
+  drivers: RemittanceLedgerDriver[];
+}
+
+export interface RemittanceLedgerSummary {
+  status: RemittanceMatchStatus;
+  mode: RemittanceMatchMode;
+  window: { from: string; to: string };
+  sameDayExpectedCashTotal: number;
+  sameDayRemittanceTotalCash: number;
+  sameDayShortAmount: number;
+  finalPendingTotal: number;
+  limitedByRemittanceWindow: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // API contract (frontend <-> worker)
 // ---------------------------------------------------------------------------

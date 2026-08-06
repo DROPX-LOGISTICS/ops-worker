@@ -56,7 +56,18 @@ export const AMAZON_RESOURCES = {
     resourcePath: '/getRemittance',
     processName: 'cod',
   },
+  /** Remittance Excel/details — tmSystem returns correct totals (cod legacy often zeros). */
+  getRemittanceDetailsForExcel: {
+    resourcePath: '/v1/getRemittanceDetailsForExcel',
+    processName: 'tmSystem',
+  },
 } as const;
 
 /** Tolerance below which a monetary/count value is treated as zero. */
 export const AMOUNT_EPSILON = 0.01;
+
+/**
+ * Remittance vs ageing cash may differ by up to ₹1 (rounding / coin noise).
+ * Within this band treat as matched and skip pendingLiabilities.
+ */
+export const REMITTANCE_CASH_TOLERANCE = 1;
