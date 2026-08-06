@@ -33,6 +33,7 @@ export async function validateHandler(c: Context<{ Bindings: Env }>) {
     const ensured = await ensureValidAmazonSession(c.env, {
       triggeredBy: `validate:${body.stationCode}`,
       notifyOnFailure: true,
+      stationCode: body.stationCode,
     });
 
     if (!ensured.ok) {
@@ -63,6 +64,7 @@ export async function validateHandler(c: Context<{ Bindings: Env }>) {
       const refreshed = await refreshAmazonSession(c.env, {
         triggeredBy: `validate-retry:${body.stationCode}`,
         notifyOnFailure: true,
+        stationCode: body.stationCode,
       });
 
       if (refreshed.ok) {

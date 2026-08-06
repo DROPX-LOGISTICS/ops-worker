@@ -14,9 +14,14 @@ ADMIN_API_KEY="change-me-to-a-long-random-string"
 AMAZON_PORTAL_EMAIL="portal-user@example.com"
 AMAZON_PORTAL_PASSWORD="your-portal-password"
 
-# Station used only to open the cash overview page during login capture.
-# Validate requests still send their own stationCode from the frontend.
+# Station used only to open the cash overview page during login capture
+# for the *default* portal account. Validate requests still send their own stationCode.
 AMAZON_LOGIN_STATION_CODE="TIRC"
+
+# Dedicated stations (KDJG, JUGF, AWEZ, KGQE) use separate portal accounts.
+# 1) Run sql/migrate-multi-portal-accounts.sql in Supabase
+# 2) npm run credentials:seed-stations
+# 3) Ensure/refresh session with { "stationCode": "KDJG" } (etc.)
 
 # Who receives AMAZON_LOGIN_FAILED / AMAZON_SESSION_EXPIRED notifications.
 OWNER_EMAIL="owner@yourcompany.com"

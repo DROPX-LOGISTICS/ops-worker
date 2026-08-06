@@ -189,6 +189,8 @@ export interface StoredCredential {
   uploadedAt: string;
   status: SessionStatus;
   expiredAt?: string | null;
+  /** Portal account this session belongs to (`default`, `KDJG`, …). */
+  accountKey?: string;
 }
 
 // ---------------------------------------------------------------------------

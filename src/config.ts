@@ -9,6 +9,31 @@ export const ALLOWED_STATIONS: ReadonlySet<string> = new Set([
   'JUGF', 'KANA', 'KDJE', 'KDJG', 'SBPD', 'JUGE', 'KTUO', 'HBSC', 'AWEZ',
 ]);
 
+/** Default portal login account (shared across most stations). */
+export const DEFAULT_PORTAL_ACCOUNT = 'default';
+
+/**
+ * Stations that cannot use the default Amazon portal user.
+ * Each maps to its own portal account_key (stored in amazon_portal_credentials).
+ */
+export const STATION_PORTAL_ACCOUNT: Readonly<Record<string, string>> = {
+  KDJG: 'KDJG',
+  JUGF: 'JUGF',
+  AWEZ: 'AWEZ',
+  KGQE: 'KGQE',
+};
+
+/** Resolve which portal credential / session account to use for a station. */
+export function portalAccountKeyForStation(stationCode?: string | null): string {
+  const code = (stationCode ?? '').trim().toUpperCase();
+  if (!code) return DEFAULT_PORTAL_ACCOUNT;
+  return STATION_PORTAL_ACCOUNT[code] ?? DEFAULT_PORTAL_ACCOUNT;
+}
+
+export function isDedicatedPortalStation(stationCode?: string | null): boolean {
+  return portalAccountKeyForStation(stationCode) !== DEFAULT_PORTAL_ACCOUNT;
+}
+
 /**
  * Amazon's proxy gateway is a single POST endpoint that dispatches based on
  * `resourcePath` + `processName` in the body. Traffic showed two parallel API

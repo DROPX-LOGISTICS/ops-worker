@@ -45,10 +45,15 @@ async function parseStationDate(
   return { stationCode, date, range };
 }
 
-async function requireAmazonSession(c: Context<{ Bindings: Env }>, triggeredBy: string) {
+async function requireAmazonSession(
+  c: Context<{ Bindings: Env }>,
+  triggeredBy: string,
+  stationCode?: string,
+) {
   const ensured = await ensureValidAmazonSession(c.env, {
     triggeredBy,
     notifyOnFailure: true,
+    stationCode,
   });
   if (!ensured.ok) {
     return {
@@ -58,13 +63,19 @@ async function requireAmazonSession(c: Context<{ Bindings: Env }>, triggeredBy: 
           status: 'failed',
           code: ensured.code,
           error: ensured.error,
+          accountKey: ensured.accountKey,
           needsLocalLogin: Boolean(ensured.needsLocalLogin),
         },
         ensured.needsLocalLogin ? 503 : 401,
       ),
     };
   }
-  return { ok: true as const, auth: ensured.auth, sessionSource: ensured.source };
+  return {
+    ok: true as const,
+    auth: ensured.auth,
+    sessionSource: ensured.source,
+    accountKey: ensured.accountKey,
+  };
 }
 
 /**
@@ -78,7 +89,7 @@ async function requireAmazonSession(c: Context<{ Bindings: Env }>, triggeredBy: 
 export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>) {
   const { stationCode, date, range } = await parseStationDate(c);
 
-  const session = await requireAmazonSession(c, `executive-recon:${stationCode}`);
+  const session = await requireAmazonSession(c, `executive-recon:${stationCode}`, stationCode);
   if (!session.ok) return session.response;
 
   const provider = createStationDataProvider(c.env);
@@ -97,6 +108,7 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
     date,
     dateRange: range,
     sessionSource: session.sessionSource,
+    accountKey: session.accountKey,
     drivers,
     driverCount: drivers.length,
     reconciliation,
@@ -116,7 +128,7 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
 export async function liabilitySummaryExecutiveHandler(c: Context<{ Bindings: Env }>) {
   const { stationCode, date, range } = await parseStationDate(c);
 
-  const session = await requireAmazonSession(c, `executive-liability:${stationCode}`);
+  const session = await requireAmazonSession(c, `executive-liability:${stationCode}`, stationCode);
   if (!session.ok) return session.response;
 
   const provider = createStationDataProvider(c.env);
@@ -129,6 +141,7 @@ export async function liabilitySummaryExecutiveHandler(c: Context<{ Bindings: En
     date,
     dateRange: range,
     sessionSource: session.sessionSource,
+    accountKey: session.accountKey,
     summary,
     check,
   });
@@ -146,7 +159,7 @@ export async function liabilitySummaryExecutiveHandler(c: Context<{ Bindings: En
 export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
   const { stationCode, date, range } = await parseStationDate(c);
 
-  const session = await requireAmazonSession(c, `executive-remittance:${stationCode}`);
+  const session = await requireAmazonSession(c, `executive-remittance:${stationCode}`, stationCode);
   if (!session.ok) return session.response;
 
   const provider = createStationDataProvider(c.env);
@@ -178,6 +191,7 @@ export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
     date,
     dateRange: range,
     sessionSource: session.sessionSource,
+    accountKey: session.accountKey,
     remittanceTotalCash,
     created,
     createdCount: created.length,

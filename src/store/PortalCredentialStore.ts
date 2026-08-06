@@ -1,7 +1,9 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { DEFAULT_PORTAL_ACCOUNT } from '../config';
 import type { Env } from '../types';
 
 export interface PortalCredentials {
+  accountKey: string;
   email: string;
   password: string;
   defaultStationCode: string;
@@ -13,6 +15,7 @@ export interface PortalCredentials {
 }
 
 export interface PortalCredentialsPublic {
+  accountKey: string;
   email: string;
   passwordPreview: string;
   defaultStationCode: string;
@@ -24,7 +27,7 @@ export interface PortalCredentialsPublic {
 }
 
 interface CredentialRow {
-  id: number;
+  account_key: string;
   email: string;
   password: string;
   default_station_code: string;
@@ -42,6 +45,7 @@ function redactPassword(password: string): string {
 
 function toPublic(row: CredentialRow): PortalCredentialsPublic {
   return {
+    accountKey: row.account_key,
     email: row.email,
     passwordPreview: redactPassword(row.password),
     defaultStationCode: row.default_station_code,
@@ -55,6 +59,7 @@ function toPublic(row: CredentialRow): PortalCredentialsPublic {
 
 function toCredentials(row: CredentialRow): PortalCredentials {
   return {
+    accountKey: row.account_key,
     email: row.email,
     password: row.password,
     defaultStationCode: row.default_station_code,
@@ -66,28 +71,33 @@ function toCredentials(row: CredentialRow): PortalCredentials {
   };
 }
 
+function normalizeAccountKey(accountKey?: string | null): string {
+  const key = (accountKey ?? DEFAULT_PORTAL_ACCOUNT).trim();
+  return key || DEFAULT_PORTAL_ACCOUNT;
+}
+
 /**
  * Editable Amazon portal email/password used by Puppeteer auto-login.
- * Falls back to AMAZON_PORTAL_EMAIL / AMAZON_PORTAL_PASSWORD env secrets
- * when no DB row exists yet (bootstrap path).
+ * Multiple accounts are keyed by `account_key` (default + dedicated stations).
+ * Env AMAZON_PORTAL_EMAIL / PASSWORD bootstrap only the `default` account.
  */
 export class PortalCredentialStore {
   private readonly client: SupabaseClient;
 
-  constructor(
-    private readonly env: Env,
-  ) {
+  constructor(private readonly env: Env) {
     this.client = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
       auth: { persistSession: false },
     });
   }
 
-  async getPublic(): Promise<PortalCredentialsPublic | { configured: false }> {
-    const row = await this.fetchRow();
+  async getPublic(accountKey?: string): Promise<PortalCredentialsPublic | { configured: false; accountKey: string }> {
+    const key = normalizeAccountKey(accountKey);
+    const row = await this.fetchRow(key);
     if (row) return toPublic(row);
 
-    if (this.env.AMAZON_PORTAL_EMAIL && this.env.AMAZON_PORTAL_PASSWORD) {
+    if (key === DEFAULT_PORTAL_ACCOUNT && this.env.AMAZON_PORTAL_EMAIL && this.env.AMAZON_PORTAL_PASSWORD) {
       return {
+        accountKey: DEFAULT_PORTAL_ACCOUNT,
         email: this.env.AMAZON_PORTAL_EMAIL,
         passwordPreview: redactPassword(this.env.AMAZON_PORTAL_PASSWORD),
         defaultStationCode: this.env.AMAZON_LOGIN_STATION_CODE || 'TIRC',
@@ -98,15 +108,37 @@ export class PortalCredentialStore {
         configured: true,
       };
     }
-    return { configured: false };
+    return { configured: false, accountKey: key };
   }
 
-  async getForLogin(): Promise<PortalCredentials | null> {
-    const row = await this.fetchRow();
+  async listPublic(): Promise<PortalCredentialsPublic[]> {
+    const { data, error } = await this.client
+      .from('amazon_portal_credentials')
+      .select('*')
+      .order('account_key', { ascending: true });
+
+    if (error) {
+      console.error('PortalCredentialStore.listPublic failed', error);
+      return [];
+    }
+
+    const rows = (data as CredentialRow[] | null) ?? [];
+    const listed = rows.map(toPublic);
+    if (!listed.some((r) => r.accountKey === DEFAULT_PORTAL_ACCOUNT)) {
+      const fallback = await this.getPublic(DEFAULT_PORTAL_ACCOUNT);
+      if ('configured' in fallback && fallback.configured) listed.unshift(fallback);
+    }
+    return listed;
+  }
+
+  async getForLogin(accountKey?: string): Promise<PortalCredentials | null> {
+    const key = normalizeAccountKey(accountKey);
+    const row = await this.fetchRow(key);
     if (row) return toCredentials(row);
 
-    if (this.env.AMAZON_PORTAL_EMAIL && this.env.AMAZON_PORTAL_PASSWORD) {
+    if (key === DEFAULT_PORTAL_ACCOUNT && this.env.AMAZON_PORTAL_EMAIL && this.env.AMAZON_PORTAL_PASSWORD) {
       return {
+        accountKey: DEFAULT_PORTAL_ACCOUNT,
         email: this.env.AMAZON_PORTAL_EMAIL,
         password: this.env.AMAZON_PORTAL_PASSWORD,
         defaultStationCode: this.env.AMAZON_LOGIN_STATION_CODE || 'TIRC',
@@ -120,43 +152,57 @@ export class PortalCredentialStore {
     return null;
   }
 
-  async upsert(email: string, password: string, defaultStationCode: string, updatedBy: string): Promise<PortalCredentialsPublic> {
+  async upsert(
+    email: string,
+    password: string,
+    defaultStationCode: string,
+    updatedBy: string,
+    accountKey?: string,
+  ): Promise<PortalCredentialsPublic> {
+    const key = normalizeAccountKey(accountKey);
     const { data, error } = await this.client
       .from('amazon_portal_credentials')
       .upsert(
         {
-          id: 1,
+          account_key: key,
           email,
           password,
           default_station_code: defaultStationCode,
           updated_by: updatedBy,
           updated_at: new Date().toISOString(),
         },
-        { onConflict: 'id' },
+        { onConflict: 'account_key' },
       )
       .select('*')
       .single();
 
     if (error || !data) {
-      throw new Error(`Failed to store portal credentials: ${error?.message ?? 'unknown error'}`);
+      throw new Error(`Failed to store portal credentials (${key}): ${error?.message ?? 'unknown error'}`);
     }
     return toPublic(data as CredentialRow);
   }
 
   /**
-   * Acquire a short login lock. Returns false if another login is already in progress.
+   * Acquire a short login lock for one account. Returns false if another login
+   * for the same account is already in progress.
    */
-  async tryAcquireLoginLock(ttlSeconds = 120): Promise<boolean> {
+  async tryAcquireLoginLock(accountKey?: string, ttlSeconds = 120): Promise<boolean> {
+    const key = normalizeAccountKey(accountKey);
     const until = new Date(Date.now() + ttlSeconds * 1000).toISOString();
     const nowIso = new Date().toISOString();
 
-    // Ensure the singleton row exists so we can lock it.
-    let row = await this.fetchRow();
+    let row = await this.fetchRow(key);
     if (!row) {
-      const bootstrap = await this.getForLogin();
+      const bootstrap = await this.getForLogin(key);
       if (!bootstrap) return false;
-      await this.upsert(bootstrap.email, bootstrap.password, bootstrap.defaultStationCode, bootstrap.updatedBy);
-      row = await this.fetchRow();
+      await this.upsert(
+        bootstrap.email,
+        bootstrap.password,
+        bootstrap.defaultStationCode,
+        bootstrap.updatedBy,
+        key,
+      );
+      row = await this.fetchRow(key);
     }
     if (!row) return false;
 
@@ -167,7 +213,7 @@ export class PortalCredentialStore {
     const { error } = await this.client
       .from('amazon_portal_credentials')
       .update({ login_locked_until: until })
-      .eq('id', 1);
+      .eq('account_key', key);
 
     if (error) {
       console.error('PortalCredentialStore.tryAcquireLoginLock failed', error);
@@ -176,7 +222,11 @@ export class PortalCredentialStore {
     return true;
   }
 
-  async releaseLoginLock(result: { ok: true } | { ok: false; error: string }): Promise<void> {
+  async releaseLoginLock(
+    result: { ok: true } | { ok: false; error: string },
+    accountKey?: string,
+  ): Promise<void> {
+    const key = normalizeAccountKey(accountKey);
     const patch =
       result.ok
         ? {
@@ -189,21 +239,47 @@ export class PortalCredentialStore {
             last_login_error: result.error.slice(0, 1000),
           };
 
-    const { error } = await this.client.from('amazon_portal_credentials').update(patch).eq('id', 1);
+    const { error } = await this.client
+      .from('amazon_portal_credentials')
+      .update(patch)
+      .eq('account_key', key);
     if (error) console.error('PortalCredentialStore.releaseLoginLock failed', error);
   }
 
-  private async fetchRow(): Promise<CredentialRow | null> {
-    const { data, error } = await this.client
+  private async fetchRow(accountKey: string): Promise<CredentialRow | null> {
+    const key = normalizeAccountKey(accountKey);
+
+    // Preferred: account_key column (after migration).
+    const byKey = await this.client
       .from('amazon_portal_credentials')
       .select('*')
-      .eq('id', 1)
+      .eq('account_key', key)
       .maybeSingle();
 
-    if (error) {
-      console.error('PortalCredentialStore.fetchRow failed', error);
-      return null;
+    if (!byKey.error && byKey.data) {
+      const row = byKey.data as CredentialRow & { account_key?: string };
+      return { ...row, account_key: row.account_key ?? key };
     }
-    return data as CredentialRow | null;
+
+    // Legacy singleton fallback (pre-migration id=1 → default only).
+    if (key === DEFAULT_PORTAL_ACCOUNT) {
+      const legacy = await this.client
+        .from('amazon_portal_credentials')
+        .select('*')
+        .eq('id', 1)
+        .maybeSingle();
+      if (legacy.error) {
+        console.error('PortalCredentialStore.fetchRow legacy failed', legacy.error);
+        return null;
+      }
+      if (!legacy.data) return null;
+      const row = legacy.data as CredentialRow & { account_key?: string };
+      return { ...row, account_key: row.account_key ?? DEFAULT_PORTAL_ACCOUNT };
+    }
+
+    if (byKey.error && !String(byKey.error.message || '').includes('account_key')) {
+      console.error('PortalCredentialStore.fetchRow failed', byKey.error);
+    }
+    return null;
   }
 }

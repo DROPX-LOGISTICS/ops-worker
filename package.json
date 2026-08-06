@@ -8,6 +8,7 @@
     "dev:worker": "wrangler dev -c wrangler.dev.toml",
     "dev:remote": "wrangler dev --remote",
     "session:login": "node scripts/local-session-login.mjs",
+    "credentials:seed-stations": "node scripts/seed-station-portal-credentials.mjs",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "tail": "wrangler tail"

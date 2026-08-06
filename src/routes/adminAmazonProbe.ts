@@ -45,6 +45,7 @@ export async function liabilitySummaryHandler(c: Context<{ Bindings: Env }>) {
   const ensured = await ensureValidAmazonSession(c.env, {
     triggeredBy: `probe-liability:${stationCode}`,
     notifyOnFailure: true,
+    stationCode,
   });
   if (!ensured.ok) {
     return c.json(
@@ -52,6 +53,7 @@ export async function liabilitySummaryHandler(c: Context<{ Bindings: Env }>) {
         status: 'failed',
         code: ensured.code,
         error: ensured.error,
+        accountKey: ensured.accountKey,
         needsLocalLogin: Boolean(ensured.needsLocalLogin),
       },
       ensured.needsLocalLogin ? 503 : 401,

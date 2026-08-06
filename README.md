@@ -99,6 +99,53 @@ npm run dev
 
 `GET /api/admin/credentials` returns a redacted preview (never the raw password).
 
+### Dedicated portal accounts (KDJG / JUGF / AWEZ / KGQE)
+
+These four stations cannot use the shared default Amazon user. Each has its own
+portal login + session (`account_key`).
+
+| Station | Portal account |
+|---|---|
+| KDJG | `KDJG` |
+| JUGF | `JUGF` |
+| AWEZ | `AWEZ` |
+| KGQE | `KGQE` |
+| All other allowlisted stations | `default` |
+
+**Setup**
+
+1. Run `sql/migrate-multi-portal-accounts.sql` in Supabase (existing projects).
+2. Seed the four accounts:
+
+```bash
+npm run credentials:seed-stations
+```
+
+Or upsert one-by-one:
+
+```http
+PUT /api/admin/credentials
+x-admin-key: …
+Content-Type: application/json
+
+{
+  "accountKey": "KDJG",
+  "email": "xguptapr@amazon.com",
+  "password": "…",
+  "defaultStationCode": "KDJG"
+}
+```
+
+3. Ensure a session for that station (auto-login uses that account):
+
+```http
+POST /api/admin/session/ensure
+{ "stationCode": "KDJG" }
+```
+
+Executive / validate calls for those stations automatically resolve the matching
+account and session — no frontend change beyond sending the correct `stationCode`.
+
 ### Manual upload (fallback)
 
 If MFA / passkey blocks Puppeteer:
