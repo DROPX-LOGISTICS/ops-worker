@@ -5,6 +5,7 @@ import { getBusinessDayRange } from '../utils/dateRange';
 import { checkPendingRecon } from '../validators/pendingRecon';
 import { checkRemittanceMatch } from '../validators/remittanceMatch';
 import { checkLiability } from '../validators/liability';
+import { enrichReconciliationWithAgeing } from '../utils/reconState';
 import { ValidationInputError } from '../errors';
 import { ALLOWED_STATIONS } from '../config';
 
@@ -35,6 +36,10 @@ function assertValidRequest(body: ValidateRequestBody): void {
  * reconciliation is the only dependent chain; liability and remittances are
  * independent) so the sequential nature of the checks doesn't cost extra
  * round-trip latency.
+ *
+ * Pending recon is corrected from ageing `state` for the requested date
+ * (Cash In Associate = pending) because Amazon's overallPendingRecon is
+ * cumulative and can include later days' open cash.
  */
 export async function runValidationPipeline(
   body: ValidateRequestBody,
@@ -48,13 +53,19 @@ export async function runValidationPipeline(
   const auth = body.auth!;
   const range = getBusinessDayRange(date, Number(env.BUSINESS_DAY_START_HOUR_IST ?? '0'));
 
-  const [reconciliationList, liabilitySummary, remittanceList] = await Promise.all([
+  const [rawReconciliation, ageingPackages, liabilitySummary, remittanceList] = await Promise.all([
     provider.getActiveDrivers(stationCode, auth).then((drivers) =>
       provider.getDriverReconciliation(stationCode, range, drivers, auth),
     ),
+    provider.getAgeingDrillDownData(stationCode, date, auth),
     provider.getStationLiabilitySummary(stationCode, range, auth),
     provider.getRemittances(stationCode, range, auth),
   ]);
+
+  const { entries: reconciliationList } = enrichReconciliationWithAgeing(
+    rawReconciliation,
+    ageingPackages,
+  );
 
   const steps: StepResult[] = [];
 

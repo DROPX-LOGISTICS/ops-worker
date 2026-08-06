@@ -201,7 +201,19 @@ Content-Type: application/json
 |---|---|
 | Active drivers | `/v1/getDrivers` (`codNAWS`) |
 | Reconciliation | `/v1/getDriverReconciliation` (`codNAWS`) |
-| Expected cash | `/os/getDrillDownData` (`oculus`) — per status (`Delivered`, `Cash At Station`, `Cash With Associate`), `size: 10000` + `startingIndex` pagination; UTC day in unix seconds |
+| Expected cash + recon correction | `/os/getDrillDownData` (`oculus`) — per status (`Delivered`, `Cash At Station`, `Cash With Associate`), `size: 10000` + `startingIndex` pagination; UTC day in unix seconds |
+
+**Pending vs completed recon (ageing `state`)**
+
+Amazon's `overallPendingRecon` is cumulative and can include later days' open cash. For the requested date, reconciliation is corrected from ageing CASH packages:
+
+| Ageing `state` | Meaning |
+|---|---|
+| `Cash In Associate` / `Cash With Associate` | Pending recon |
+| `CASH_AT_STATION` / `Cash At Station` | Completed recon |
+| `delivered` / `Delivered` | Neither (still included in expected cash) |
+
+Each recon row gets `pendingReconAmount` / `completedReconAmount`, and `paymentInfo.overallPendingRecon` is overwritten with the pending sum. Response also includes station totals `pendingReconTotal` / `completedReconTotal`.
 
 **Expected cash** filters `actualPaymentMethod === "CASH"`, maps `driverId` → `drivers[].tasId` when possible, and **still includes** unmatched driverIds (`mappedToActiveDriver: false`). Returns:
 
@@ -335,7 +347,7 @@ Content-Type: application/json
 
 Checks (stop at first unresolved failure):
 
-1. **pendingRecon** — every active driver's `overallPendingRecon` ≈ 0  
+1. **pendingRecon** — every active driver's `overallPendingRecon` ≈ 0 (overridden from ageing `state` for the request date: Cash In Associate = pending)  
 2. **remittanceMatch** — business-day `CREATED`/`SUBMITTED` remittance sum equals denomination total  
 3. **liability** — liability cash + mPOS fields all ≈ 0  
 

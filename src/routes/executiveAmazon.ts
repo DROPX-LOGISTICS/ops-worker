@@ -7,6 +7,7 @@ import { createStationDataProvider } from '../providers/factory';
 import { ensureValidAmazonSession } from '../session/ensureSession';
 import { checkLiability } from '../validators/liability';
 import { buildExpectedCashFromAgeing } from '../utils/expectedCash';
+import { enrichReconciliationWithAgeing } from '../utils/reconState';
 import {
   reconcileRemittancePending,
 } from '../services/remittancePending';
@@ -76,7 +77,9 @@ async function requireAmazonSession(
 
 /**
  * Executive Reconciliation / station change:
- * getDrivers → getDriverReconciliation + ageing expected cash (single oculus call).
+ * getDrivers → getDriverReconciliation + ageing expected cash.
+ * Pending/completed recon amounts are corrected from ageing `state`
+ * for the requested date (Cash In Associate / CASH_AT_STATION).
  *
  * POST /api/admin/executive/driver-reconciliation
  * Header: x-admin-key
@@ -91,12 +94,18 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
   const provider = createStationDataProvider(c.env);
   const drivers = await provider.getActiveDrivers(stationCode, session.auth);
 
-  const [reconciliation, ageingPackages] = await Promise.all([
+  const [rawReconciliation, ageingPackages] = await Promise.all([
     provider.getDriverReconciliation(stationCode, range, drivers, session.auth),
     provider.getAgeingDrillDownData(stationCode, date, session.auth),
   ]);
 
   const expectedCash = buildExpectedCashFromAgeing(drivers, ageingPackages);
+  // Ageing state is date-scoped; Amazon overallPendingRecon is cumulative.
+  const {
+    entries: reconciliation,
+    pendingReconTotal,
+    completedReconTotal,
+  } = enrichReconciliationWithAgeing(rawReconciliation, ageingPackages);
 
   return c.json({
     status: 'ok',
@@ -109,6 +118,8 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
     driverCount: drivers.length,
     reconciliation,
     reconciliationCount: reconciliation.length,
+    pendingReconTotal,
+    completedReconTotal,
     expectedCash,
   });
 }

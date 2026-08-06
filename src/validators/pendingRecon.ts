@@ -16,8 +16,10 @@ export interface PendingReconResult {
 
 /**
  * Step 1: every active driver at the station must have zero pending
- * reconciliation (overallPendingRecon) before a cash denomination can be
- * accepted — cash they're still holding hasn't been reconciled yet.
+ * reconciliation for the requested date before a cash denomination can be
+ * accepted. Callers should pass entries already enriched from ageing
+ * (`enrichReconciliationWithAgeing`) so overallPendingRecon reflects
+ * Cash In Associate for that day — not Amazon's cumulative pending.
  */
 export function checkPendingRecon(entries: DriverReconciliationEntry[]): PendingReconResult {
   const failures: PendingReconFailure[] = [];

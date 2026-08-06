@@ -67,9 +67,18 @@ export interface DriverReconciliationEntry {
     actualMpos: Money;
     balance: Money;
     variance: Money;
+    /**
+     * Pending recon for the requested date.
+     * Overridden from ageing `state` (Cash In Associate) when enrichment runs;
+     * Amazon's raw value is cumulative and not reliable for historical dates.
+     */
     overallPendingRecon: Money;
     overallPendingReconBreakdownList: ReconBreakdownItem[];
   };
+  /** Ageing-derived pending (Cash In Associate) for the requested date (INR). */
+  pendingReconAmount?: number;
+  /** Ageing-derived completed (CASH_AT_STATION) for the requested date (INR). */
+  completedReconAmount?: number;
 }
 
 export interface LiabilitySummary {
