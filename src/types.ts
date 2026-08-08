@@ -28,6 +28,19 @@ export interface Env {
   AMAZON_PORTAL_PASSWORD?: string;
   /** Station used only while scraping cookie/key during auto-login (e.g. TIRC). Not a validate station. */
   AMAZON_LOGIN_STATION_CODE?: string;
+
+  /**
+   * Amazon Logistics workforce portal (logistics.amazon.in) — DSP associates roster.
+   * Used to resolve ageing driverId / tasId → human name for unmapped drivers.
+   */
+  WORKFORCE_BASE_URL?: string;
+  WORKFORCE_COMPANY_ID?: string;
+  /**
+   * logistics.amazon.in Puppeteer login (email → Continue → password → Sign in).
+   * Prefer these over one-off cookie uploads.
+   */
+  WORKFORCE_PORTAL_EMAIL?: string;
+  WORKFORCE_PORTAL_PASSWORD?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +176,11 @@ export interface ExpectedCashByDriver {
   tasId: string | null;
   /** False when driverId was not in the active drivers list. */
   mappedToActiveDriver: boolean;
+  /**
+   * True when name/identity was resolved from workforce roster
+   * (logistics.amazon.in transporter_id) rather than station getDrivers.
+   */
+  mappedFromWorkforce?: boolean;
   totalReceived: number;
   shipmentCount: number;
   shipments: ExpectedCashShipment[];
@@ -245,9 +263,41 @@ export interface RemittanceLedgerDriver {
   driverName: string;
   tasId: string | null;
   employeeId: number | null;
+  /** True when name came from workforce transporter_id roster. */
+  mappedFromWorkforce?: boolean;
   amount: number;
   shipmentCount: number;
   shipments: RemittanceLedgerShipment[];
+}
+
+/** logistics.amazon.in workforce portal auth (cookie jar only). */
+export interface WorkforceAuthContext {
+  cookie: string;
+}
+
+/** One DSP associate from fetchDSPAssociates (transporter_id ≡ station tasId). */
+export interface WorkforceAssociate {
+  transporterId: string;
+  fullName: string;
+  providerId: string | null;
+  roles: string | null;
+  qualifications: string | null;
+  operationalStatus: string | null;
+  personalPhoneNumber: string | null;
+  workPhoneNumber: string | null;
+  emailAddress: string | null;
+  driverLicenseExpirationDate: string | null;
+  photoUrl: string | null;
+}
+
+export interface StoredWorkforceSession {
+  id: string;
+  cookie: string;
+  uploadedBy: string;
+  uploadedAt: string;
+  status: 'active' | 'expired';
+  expiredAt: string | null;
+  accountKey: string;
 }
 
 export interface RemittanceLedgerDay {

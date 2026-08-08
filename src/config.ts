@@ -71,3 +71,25 @@ export const AMOUNT_EPSILON = 0.01;
  * Within this band treat as matched and skip pendingLiabilities.
  */
 export const REMITTANCE_CASH_TOLERANCE = 1;
+
+/** Default workforce portal host (DSP associates / DA console). */
+export const DEFAULT_WORKFORCE_BASE_URL = 'https://logistics.amazon.in';
+
+/**
+ * DropX DSP company id on logistics.amazon.in workforce APIs.
+ * Override with WORKFORCE_COMPANY_ID env if Amazon rotates it.
+ */
+export const DEFAULT_WORKFORCE_COMPANY_ID = 'b63603e9-36e2-4656-9b87-c421489a64a9';
+
+export function workforceBaseUrl(env: { WORKFORCE_BASE_URL?: string }): string {
+  return (env.WORKFORCE_BASE_URL ?? DEFAULT_WORKFORCE_BASE_URL).replace(/\/$/, '');
+}
+
+export function workforceCompanyId(env: { WORKFORCE_COMPANY_ID?: string }): string {
+  return (env.WORKFORCE_COMPANY_ID ?? DEFAULT_WORKFORCE_COMPANY_ID).trim();
+}
+
+/** Workforce API paths (extend as more endpoints are wired). */
+export const WORKFORCE_RESOURCES = {
+  fetchDSPAssociates: '/workforce/api/v1/fetchDSPAssociates',
+} as const;

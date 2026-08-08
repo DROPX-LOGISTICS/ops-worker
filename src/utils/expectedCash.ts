@@ -4,6 +4,7 @@ import type {
   ExpectedCashShipment,
   ExpectedCashSummary,
   AgeingPackageDetail,
+  WorkforceAssociate,
 } from '../types';
 import { round2 } from './number';
 
@@ -43,6 +44,7 @@ type Bucket = {
   driverName: string;
   tasId: string | null;
   mappedToActiveDriver: boolean;
+  mappedFromWorkforce: boolean;
   shipments: ExpectedCashShipment[];
 };
 
@@ -50,12 +52,12 @@ type Bucket = {
  * Ageing CASH packages → expectedCash for the frontend.
  * Filters on actualPaymentMethod === CASH.
  * Matches driverId → drivers[].tasId when possible; unmatched driverIds
- * (e.g. A2S80CSWXBRVK9 not in getDrivers) are still returned with
- * mappedToActiveDriver: false so the UI can collect that cash.
+ * fall back to workforce roster (transporter_id) when provided.
  */
 export function buildExpectedCashFromAgeing(
   drivers: Driver[],
   packages: AgeingPackageDetail[],
+  workforceByTransporterId?: Map<string, WorkforceAssociate>,
 ): ExpectedCashSummary {
   const cashPackages = packages.filter((p) => isCashMethod(p.actualPaymentMethod));
   const byTasId = new Map<string, Driver>();
@@ -77,14 +79,17 @@ export function buildExpectedCashFromAgeing(
           driverName: driver.driverName,
           tasId: driver.tasId,
           mappedToActiveDriver: true,
+          mappedFromWorkforce: false,
           shipments: [],
         };
       } else if (driverId) {
+        const wf = workforceByTransporterId?.get(driverId);
         bucket = {
           employeeId: null,
-          driverName: `Unmapped driver (${driverId})`,
+          driverName: wf?.fullName ?? `Unmapped driver (${driverId})`,
           tasId: driverId,
           mappedToActiveDriver: false,
+          mappedFromWorkforce: Boolean(wf),
           shipments: [],
         };
       } else {
@@ -93,6 +98,7 @@ export function buildExpectedCashFromAgeing(
           driverName: 'Unassigned driver',
           tasId: null,
           mappedToActiveDriver: false,
+          mappedFromWorkforce: false,
           shipments: [],
         };
       }
@@ -116,6 +122,7 @@ export function buildExpectedCashFromAgeing(
       driverName: bucket.driverName,
       tasId: bucket.tasId,
       mappedToActiveDriver: bucket.mappedToActiveDriver,
+      mappedFromWorkforce: bucket.mappedFromWorkforce || undefined,
       totalReceived: driverTotal,
       shipmentCount: bucket.shipments.length,
       shipments: bucket.shipments,

@@ -17,6 +17,15 @@ import {
   remittanceHandler,
 } from './routes/executiveAmazon';
 import { listNotificationsHandler, acknowledgeNotificationHandler } from './routes/notifications';
+import {
+  uploadWorkforceSessionHandler,
+  workforceSessionStatusHandler,
+  ensureWorkforceSessionHandler,
+  refreshWorkforceSessionHandler,
+  syncWorkforceRosterHandler,
+  listWorkforceAssociatesHandler,
+  getWorkforceAssociateHandler,
+} from './routes/adminWorkforce';
 import { adminAuth } from './middleware/adminAuth';
 import { errorHandler } from './middleware/errorHandler';
 import { ALLOWED_STATIONS } from './config';
@@ -55,6 +64,15 @@ app.get('/api/admin/credentials', getCredentialsHandler);
 app.put('/api/admin/credentials', upsertCredentialsHandler);
 app.get('/api/admin/notifications', listNotificationsHandler);
 app.post('/api/admin/notifications/:id/ack', acknowledgeNotificationHandler);
+
+// Workforce portal (logistics.amazon.in) — separate cookie jar from station portal.
+app.put('/api/admin/workforce/session', uploadWorkforceSessionHandler);
+app.get('/api/admin/workforce/session/status', workforceSessionStatusHandler);
+app.post('/api/admin/workforce/session/ensure', ensureWorkforceSessionHandler);
+app.post('/api/admin/workforce/session/refresh', refreshWorkforceSessionHandler);
+app.post('/api/admin/workforce/roster/sync', syncWorkforceRosterHandler);
+app.get('/api/admin/workforce/associates', listWorkforceAssociatesHandler);
+app.get('/api/admin/workforce/associates/:transporterId', getWorkforceAssociateHandler);
 
 app.notFound((c) => c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404));
 

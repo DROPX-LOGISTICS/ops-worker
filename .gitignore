@@ -3,5 +3,7 @@ node_modules
 .wrangler
 dist
 *.log
+.workforce-session.cookie
 
 .cf-token-created.json
+remittance_ageing_pending_49192f2b.plan.md

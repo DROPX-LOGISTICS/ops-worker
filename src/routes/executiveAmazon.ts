@@ -8,6 +8,7 @@ import { ensureValidAmazonSession } from '../session/ensureSession';
 import { checkLiability } from '../validators/liability';
 import { buildExpectedCashFromAgeing } from '../utils/expectedCash';
 import { enrichReconciliationWithAgeing } from '../utils/reconState';
+import { loadWorkforceRosterMap } from '../services/workforceRoster';
 import {
   reconcileRemittancePending,
 } from '../services/remittancePending';
@@ -94,12 +95,17 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
   const provider = createStationDataProvider(c.env);
   const drivers = await provider.getActiveDrivers(stationCode, session.auth);
 
-  const [rawReconciliation, ageingPackages] = await Promise.all([
+  const [rawReconciliation, ageingPackages, roster] = await Promise.all([
     provider.getDriverReconciliation(stationCode, range, drivers, session.auth),
     provider.getAgeingDrillDownData(stationCode, date, session.auth),
+    loadWorkforceRosterMap(c.env),
   ]);
 
-  const expectedCash = buildExpectedCashFromAgeing(drivers, ageingPackages);
+  const expectedCash = buildExpectedCashFromAgeing(
+    drivers,
+    ageingPackages,
+    roster.byTransporterId,
+  );
   // Ageing state is date-scoped; Amazon overallPendingRecon is cumulative.
   const {
     entries: reconciliation,
@@ -121,6 +127,11 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
     pendingReconTotal,
     completedReconTotal,
     expectedCash,
+    workforceRoster: {
+      source: roster.source,
+      count: roster.count,
+      syncedAt: roster.syncedAt,
+    },
   });
 }
 
@@ -172,10 +183,11 @@ export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
 
   const provider = createStationDataProvider(c.env);
 
-  const [drivers, all, sameDayPackages] = await Promise.all([
+  const [drivers, all, sameDayPackages, roster] = await Promise.all([
     provider.getActiveDrivers(stationCode, session.auth),
     provider.getRemittances(stationCode, range, session.auth),
     provider.getAgeingDrillDownData(stationCode, date, session.auth),
+    loadWorkforceRosterMap(c.env),
   ]);
 
   const dayRemittances = all.filter(
@@ -197,7 +209,11 @@ export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
   const submittedTotal = round2(submitted.reduce((sum, r) => sum + (r.actualAmount?.value ?? 0), 0));
   const remittanceTotalCash = round2(createdTotal + submittedTotal);
 
-  const sameDayExpectedCash = buildExpectedCashFromAgeing(drivers, sameDayPackages);
+  const sameDayExpectedCash = buildExpectedCashFromAgeing(
+    drivers,
+    sameDayPackages,
+    roster.byTransporterId,
+  );
   const sameDayActive = dayRemittances.filter(
     (r) => r.status === 'CREATED' || r.status === 'SUBMITTED',
   );
@@ -212,6 +228,7 @@ export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
     sameDayRemittances: sameDayActive,
     provider,
     auth: session.auth,
+    workforceByTransporterId: roster.byTransporterId,
   });
 
   return c.json({
@@ -231,5 +248,10 @@ export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
     remittanceCodes,
     summary: ledgerResult.summary,
     ledger: ledgerResult.ledger,
+    workforceRoster: {
+      source: roster.source,
+      count: roster.count,
+      syncedAt: roster.syncedAt,
+    },
   });
 }

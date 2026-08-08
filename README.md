@@ -7,6 +7,7 @@ It provides:
 1. **Executive UI APIs** — station change (drivers + reconciliation + expected cash) and Run SCC (liability)
 2. **Full validate pipeline** — pending recon → remittance match → liability (with Supabase override trail)
 3. **Session management** — stored Amazon cookie/key, optional Puppeteer auto-login
+4. **Workforce portal** — `logistics.amazon.in` DSP associates roster (`transporter_id` ↔ ageing `driverId` / `tasId`) for unmapped driver names
 
 All Amazon-backed routes require header **`x-admin-key: <ADMIN_API_KEY>`**. Public routes are only health and the station allowlist.
 
@@ -373,6 +374,48 @@ Checks (stop at first unresolved failure):
 | `GET`/`PUT` | `/api/admin/credentials` | Portal credentials |
 | `GET` | `/api/admin/notifications?unacknowledged=true` | Owner alerts |
 | `POST` | `/api/admin/notifications/:id/ack` | Acknowledge alert |
+| `PUT` | `/api/admin/workforce/session` | Manual cookie upload (fallback) |
+| `GET` | `/api/admin/workforce/session/status` | Workforce session + roster + creds summary |
+| `POST` | `/api/admin/workforce/session/ensure` | Probe; auto Puppeteer refresh if needed |
+| `POST` | `/api/admin/workforce/session/refresh` | Force Puppeteer workforce login |
+| `POST` | `/api/admin/workforce/roster/sync` | Live sync associates → Supabase cache |
+| `GET` | `/api/admin/workforce/associates` | Search cached associates (`?q=&status=&limit=`) |
+| `GET` | `/api/admin/workforce/associates/:transporterId` | One associate by transporter id |
+
+### Workforce portal (unmapped drivers)
+
+Station portal (`amazonlogistics.eu`) and workforce (`logistics.amazon.in`) use **separate cookies**.
+
+**Preferred: Puppeteer auto-login** (same pattern as station session refresh):
+
+1. Run full `sql/workforce-schema.sql` in Supabase (includes `workforce_login_state`).
+2. Set secrets (or `.dev.vars` locally):
+
+```bash
+WORKFORCE_PORTAL_EMAIL=...
+WORKFORCE_PORTAL_PASSWORD=...
+```
+
+3. Ensure / refresh (needs Browser Rendering on Worker, or local Node script):
+
+```http
+POST /api/admin/workforce/session/ensure
+POST /api/admin/workforce/session/refresh
+```
+
+```bash
+# Local Miniflare (no BROWSER binding):
+npm run workforce:login
+npm run workforce:login -- --headed --sync
+```
+
+Login flow matches Amazon.in: open [/performance](https://logistics.amazon.in/performance?) → email → **Continue** → password → **Sign in** → land on logistics, then open workforce and capture cookies.
+
+4. Sync roster: `POST /api/admin/workforce/roster/sync`
+
+Driver-reconciliation and remittance enrich unmapped drivers via `transporter_id` ↔ ageing `driverId` (`mappedFromWorkforce: true`).
+
+Manual cookie upload (`PUT /api/admin/workforce/session`) remains as fallback if captcha/MFA blocks automation.
 
 ### Other
 

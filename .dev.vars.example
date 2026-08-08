@@ -23,6 +23,17 @@ AMAZON_LOGIN_STATION_CODE="TIRC"
 # 2) npm run credentials:seed-stations
 # 3) Ensure/refresh session with { "stationCode": "KDJG" } (etc.)
 
+# Workforce portal (logistics.amazon.in) — Puppeteer auto-login.
+# Flow: /performance → (optional soft captcha) → email → Continue → password → Sign in
+WORKFORCE_PORTAL_EMAIL="workforce-user@example.com"
+WORKFORCE_PORTAL_PASSWORD="your-workforce-password"
+# WORKFORCE_BASE_URL="https://logistics.amazon.in"
+# WORKFORCE_COMPANY_ID="b63603e9-36e2-4656-9b87-c421489a64a9"
+
+# Where session:login / workforce:login POST cookies.
+# Local default is http://127.0.0.1:8787 — start `npm run dev` first.
+# WORKER_URL="https://your-worker.workers.dev"
+
 # Who receives AMAZON_LOGIN_FAILED / AMAZON_SESSION_EXPIRED notifications.
 OWNER_EMAIL="owner@yourcompany.com"
 

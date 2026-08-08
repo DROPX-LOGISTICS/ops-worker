@@ -11,6 +11,7 @@ import type {
   RemittanceMatchMode,
   RemittanceMatchStatus,
   AgeingPackageDetail,
+  WorkforceAssociate,
 } from '../types';
 import {
   AGEING_PENDING_LOOKBACK_DAYS,
@@ -192,8 +193,17 @@ function buildLedgerDays(args: {
   packages: AgeingPackageDetail[];
   windowRemittances: RemittanceEntry[];
   clearedByTracking: Map<string, ClearedTracking>;
+  workforceByTransporterId?: Map<string, WorkforceAssociate>;
 }): RemittanceLedgerDay[] {
-  const { fromDate, toDate, drivers, packages, windowRemittances, clearedByTracking } = args;
+  const {
+    fromDate,
+    toDate,
+    drivers,
+    packages,
+    windowRemittances,
+    clearedByTracking,
+    workforceByTransporterId,
+  } = args;
 
   const expectedByDay = new Map<string, ReturnType<typeof buildExpectedCashFromAgeing>>();
   // Split packages by updateDate for per-day expected totals
@@ -214,7 +224,11 @@ function buildLedgerDays(args: {
   for (const day of eachYmdInclusive(fromDate, toDate)) {
     expectedByDay.set(
       day,
-      buildExpectedCashFromAgeing(drivers, packagesByDay.get(day) ?? []),
+      buildExpectedCashFromAgeing(
+        drivers,
+        packagesByDay.get(day) ?? [],
+        workforceByTransporterId,
+      ),
     );
   }
 
@@ -232,6 +246,7 @@ function buildLedgerDays(args: {
     driverName: string;
     tasId: string | null;
     employeeId: number | null;
+    mappedFromWorkforce?: boolean;
     shipment: RemittanceLedgerShipment;
   };
   const openByDay = new Map<string, OpenShipment[]>();
@@ -288,6 +303,7 @@ function buildLedgerDays(args: {
           driverName: driver.driverName,
           tasId: driver.tasId,
           employeeId: driver.employeeId,
+          mappedFromWorkforce: driver.mappedFromWorkforce,
           shipment: {
             trackingId,
             shipmentNo: sh.shipmentNo,
@@ -337,6 +353,7 @@ function buildLedgerDays(args: {
           driverName: o.driverName,
           tasId: o.tasId,
           employeeId: o.employeeId,
+          mappedFromWorkforce: o.mappedFromWorkforce,
           amount: 0,
           shipmentCount: 0,
           shipments: [],
@@ -390,6 +407,7 @@ export async function reconcileRemittancePending(args: {
   sameDayRemittances: RemittanceEntry[];
   provider: StationDataProvider;
   auth: AmazonAuthContext;
+  workforceByTransporterId?: Map<string, WorkforceAssociate>;
 }): Promise<RemittanceLedgerResult> {
   const {
     stationCode,
@@ -401,6 +419,7 @@ export async function reconcileRemittancePending(args: {
     sameDayRemittances,
     provider,
     auth,
+    workforceByTransporterId,
   } = args;
 
   const sameDayExpected = sameDayExpectedCash.totalReceived;
@@ -461,6 +480,7 @@ export async function reconcileRemittancePending(args: {
     packages,
     windowRemittances,
     clearedByTracking,
+    workforceByTransporterId,
   });
 
   const finalPendingTotal = round2(
