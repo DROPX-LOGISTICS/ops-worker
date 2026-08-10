@@ -11,7 +11,7 @@ interface UploadSessionBody {
   cookie: string;
   xApiUsageKey: string;
   uploadedBy: string;
-  /** Portal account / station for dedicated logins (KDJG, JUGF, AWEZ, KGQE). */
+  /** Portal account / station for dedicated logins (KDJG, JUGF, AWEZ, KGQE, HBSC). */
   accountKey?: string;
   stationCode?: string;
 }

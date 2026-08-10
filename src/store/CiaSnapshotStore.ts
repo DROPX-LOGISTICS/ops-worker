@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { CIA_PROCESSING_MARKER, CIA_PROCESSING_STALE_MS } from '../config';
 import type {
   CiaSnapshotRun,
   CiaSnapshotRunStatus,
@@ -87,6 +88,16 @@ function emptyPayload(): CiaStationPayload {
     ledger: [],
     pendingDrivers: [],
   };
+}
+
+function isProcessingSnapshot(row: Pick<StationRow, 'error' | 'status'> | CiaStationSnapshot): boolean {
+  return row.status === 'error' && row.error === CIA_PROCESSING_MARKER;
+}
+
+function isStaleFetchedAt(fetchedAt: string, nowMs = Date.now()): boolean {
+  const ts = Date.parse(fetchedAt);
+  if (!Number.isFinite(ts)) return true;
+  return nowMs - ts >= CIA_PROCESSING_STALE_MS;
 }
 
 export class CiaSnapshotStore {
@@ -194,8 +205,7 @@ export class CiaSnapshotStore {
 
   /**
    * Atomically claim station at `expectedIndex` by bumping next_station_index.
-   * Returns false when another invocation already claimed it (or run stopped),
-   * so overlapping cron ticks never process the same station twice.
+   * Prefer {@link tryClaimStation} for the station-first workflow.
    */
   async claimNextStation(runId: string, expectedIndex: number): Promise<boolean> {
     const { data, error } = await this.client
@@ -211,6 +221,104 @@ export class CiaSnapshotStore {
       return false;
     }
     return (data?.length ?? 0) > 0;
+  }
+
+  /**
+   * Claim one station for exclusive processing by inserting a processing marker.
+   * Returns false if another tick owns it (fresh marker) or a finished snapshot exists.
+   * Stale markers (Worker killed mid-tick) are reclaimed.
+   */
+  async tryClaimStation(args: {
+    runId: string;
+    stationCode: string;
+    accountKey: string;
+    windowFrom: string;
+    windowTo: string;
+  }): Promise<boolean> {
+    const existing = await this.getStationSnapshot(args.runId, args.stationCode);
+    if (existing) {
+      if (!isProcessingSnapshot(existing)) return false;
+      if (!isStaleFetchedAt(existing.fetchedAt)) return false;
+      const { data, error } = await this.client
+        .from('cia_station_snapshots')
+        .update({
+          account_key: args.accountKey,
+          status: 'error',
+          error: CIA_PROCESSING_MARKER,
+          fetched_at: new Date().toISOString(),
+          summary: emptySummary(),
+          payload: {
+            window: { from: args.windowFrom, to: args.windowTo },
+            summary: emptySummary(),
+            ledger: [],
+            pendingDrivers: [],
+          },
+        })
+        .eq('run_id', args.runId)
+        .eq('station_code', args.stationCode)
+        .eq('error', CIA_PROCESSING_MARKER)
+        .select('station_code');
+      if (error) {
+        console.error('CiaSnapshotStore.tryClaimStation reclaim failed', error);
+        return false;
+      }
+      return (data?.length ?? 0) > 0;
+    }
+
+    const { error } = await this.client.from('cia_station_snapshots').insert({
+      run_id: args.runId,
+      station_code: args.stationCode,
+      account_key: args.accountKey,
+      status: 'error',
+      error: CIA_PROCESSING_MARKER,
+      fetched_at: new Date().toISOString(),
+      summary: emptySummary(),
+      payload: {
+        window: { from: args.windowFrom, to: args.windowTo },
+        summary: emptySummary(),
+        ledger: [],
+        pendingDrivers: [],
+      },
+    });
+
+    if (!error) return true;
+    // Unique violation — another tick inserted first.
+    if (String(error.code ?? '') === '23505' || /duplicate|unique/i.test(error.message ?? '')) {
+      return false;
+    }
+    console.error('CiaSnapshotStore.tryClaimStation insert failed', error);
+    return false;
+  }
+
+  /** Recount finished snapshots and sync run counters (excludes in-flight markers). */
+  async syncRunCountersFromSnapshots(runId: string): Promise<{
+    stationsOk: number;
+    stationsFailed: number;
+    finishedCount: number;
+    inFlightCount: number;
+  }> {
+    const snaps = await this.listStationSnapshots(runId);
+    let stationsOk = 0;
+    let stationsFailed = 0;
+    let inFlightCount = 0;
+    for (const s of snaps) {
+      if (isProcessingSnapshot(s)) {
+        inFlightCount += 1;
+        continue;
+      }
+      if (s.status === 'ok') stationsOk += 1;
+      else stationsFailed += 1;
+    }
+    const finishedCount = stationsOk + stationsFailed;
+    await this.client
+      .from('cia_snapshot_runs')
+      .update({
+        stations_ok: stationsOk,
+        stations_failed: stationsFailed,
+        next_station_index: finishedCount + inFlightCount,
+      })
+      .eq('id', runId);
+    return { stationsOk, stationsFailed, finishedCount, inFlightCount };
   }
 
   async incrementRunCounters(args: {
@@ -244,7 +352,8 @@ export class CiaSnapshotStore {
         finished_at: new Date().toISOString(),
         error: args.error ?? null,
       })
-      .eq('id', args.runId);
+      .eq('id', args.runId)
+      .eq('status', 'running');
 
     if (error) {
       throw new Error(`Failed to finalize cia run: ${error.message}`);
@@ -309,5 +418,11 @@ export class CiaSnapshotStore {
       return [];
     }
     return ((data as StationRow[] | null) ?? []).map(toStation);
+  }
+
+  /** Finished snapshots only (excludes in-flight processing markers). */
+  async listFinishedStationSnapshots(runId: string): Promise<CiaStationSnapshot[]> {
+    const all = await this.listStationSnapshots(runId);
+    return all.filter((s) => !isProcessingSnapshot(s));
   }
 }

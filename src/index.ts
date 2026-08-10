@@ -87,13 +87,13 @@ app.get('/api/admin/workforce/associates/:transporterId', getWorkforceAssociateH
 
 app.notFound((c) => c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404));
 
-/** Cron that starts the daily Cash In Associate run (08:00 IST). */
-const CIA_DAILY_CRON = '30 2 * * *';
+/** Cron that starts the daily Cash In Associate run (06:00 IST). */
+const CIA_DAILY_CRON = '30 0 * * *';
 
 /**
  * Cash In Associate snapshots:
- * - 02:30 UTC (08:00 IST): start/resume the daily run + roster sync.
- * - Every 2 minutes: advance the active run by exactly one station, keeping
+ * - 00:30 UTC (06:00 IST): start/resume the daily run + roster sync.
+ * - Every 3 minutes: advance the active run by exactly one station, keeping
  *   each invocation inside the Workers Free 50-subrequest budget.
  */
 async function scheduled(

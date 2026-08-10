@@ -18,10 +18,15 @@ AMAZON_PORTAL_PASSWORD="your-portal-password"
 # for the *default* portal account. Validate requests still send their own stationCode.
 AMAZON_LOGIN_STATION_CODE="TIRC"
 
-# Dedicated stations (KDJG, JUGF, AWEZ, KGQE) use separate portal accounts.
+# Dedicated stations (KDJG, JUGF, AWEZ, KGQE, HBSC) use separate portal accounts.
 # 1) Run sql/migrate-multi-portal-accounts.sql in Supabase
 # 2) npm run credentials:seed-stations
-# 3) Ensure/refresh session with { "stationCode": "KDJG" } (etc.)
+# 3) Ensure/refresh session with { "stationCode": "HBSC" } (etc.)
+#
+# HBSC credentials (required — cannot use default portal user):
+HBSC_PORTAL_EMAIL="hbsc-user@amazon.com"
+HBSC_PORTAL_PASSWORD="your-hbsc-password"
+# Aliases also accepted: HBSC_ID / HBSC_PASS
 
 # Workforce portal (logistics.amazon.in) — Puppeteer auto-login.
 # Flow: /performance → (optional soft captcha) → email → Continue → password → Sign in

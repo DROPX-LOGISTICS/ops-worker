@@ -1,6 +1,6 @@
 import type { Context } from 'hono';
 import type { Env, CiaStationSummary } from '../types';
-import { ALLOWED_STATIONS, API_CACHE_TTL_MS } from '../config';
+import { ALLOWED_STATIONS, API_CACHE_TTL_MS, CIA_PROCESSING_MARKER } from '../config';
 import { createCiaSnapshotStore, createApiResponseCacheStore } from '../store/factory';
 import { ValidationInputError } from '../errors';
 import { round2 } from '../utils/number';
@@ -65,13 +65,13 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
             status: 'not_found',
             code: 'NO_CIA_SNAPSHOT',
             message:
-              'No Cash In Associate snapshot yet. Wait for the 08:00 IST cron or POST refresh.',
+              'No Cash In Associate snapshot yet. Wait for the 06:00 IST cron or POST refresh.',
           },
         };
       }
 
       const snap = await store.getStationSnapshot(run.id, stationCode);
-      if (!snap) {
+      if (!snap || snap.error === CIA_PROCESSING_MARKER) {
         return {
           kind: 'not_found',
           body: {
@@ -126,12 +126,12 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
             status: 'not_found',
             code: 'NO_CIA_SNAPSHOT',
             message:
-              'No Cash In Associate snapshot yet. Wait for the 08:00 IST cron or POST refresh.',
+              'No Cash In Associate snapshot yet. Wait for the 06:00 IST cron or POST refresh.',
           },
         };
       }
 
-      const snaps = await store.listStationSnapshots(run.id);
+      const snaps = await store.listFinishedStationSnapshots(run.id);
       const okSummaries = snaps.filter((s) => s.status === 'ok').map((s) => s.summary);
       const totals = sumSummaries(okSummaries);
 
@@ -172,7 +172,7 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
  * POST /api/admin/executive/cash-in-associate/refresh
  * `stationCode` via query param or JSON body refreshes one station
  * synchronously. Omit to start/resume the full network snapshot; the
- * every-2-minutes ticker cron then processes one station per tick.
+ * every-3-minutes ticker cron then processes one station per tick.
  */
 export async function ciaRefreshHandler(c: Context<{ Bindings: Env }>) {
   let stationCode = (c.req.query('stationCode') ?? '').trim().toUpperCase();
@@ -208,7 +208,7 @@ export async function ciaRefreshHandler(c: Context<{ Bindings: Env }>) {
     resumed,
     run,
     message:
-      'Snapshot run started. The ticker cron processes one station every ~2 minutes; ' +
+      'Snapshot run started. The ticker cron processes one station every ~3 minutes; ' +
       'poll the network endpoint or POST the continue endpoint to advance manually.',
   });
 }

@@ -71,6 +71,21 @@ const ACCOUNTS = [
   },
 ];
 
+const hbscEmail = (process.env.HBSC_PORTAL_EMAIL || process.env.HBSC_ID || '').trim();
+const hbscPass = (process.env.HBSC_PORTAL_PASSWORD || process.env.HBSC_PASS || '').trim();
+if (hbscEmail && hbscPass) {
+  ACCOUNTS.push({
+    account_key: 'HBSC',
+    email: hbscEmail,
+    password: hbscPass,
+    default_station_code: 'HBSC',
+  });
+} else {
+  console.warn(
+    'HBSC credentials missing in .dev.vars (set HBSC_PORTAL_EMAIL/PASSWORD or HBSC_ID/HBSC_PASS) — skipping HBSC seed.',
+  );
+}
+
 async function diagnoseSchema() {
   // Ask PostgREST what it currently knows about the table.
   const res = await fetch(`${url}/rest/v1/amazon_portal_credentials?select=*&limit=0`, {
@@ -119,7 +134,7 @@ Do this in the SAME project (${projectHost}):
 2) SQL editor → run sql/seed-station-portal-credentials.sql
    (this inserts the 4 accounts and runs NOTIFY pgrst reload)
 
-Skip the npm seed until step 2 succeeds and the SELECT at the bottom lists KDJG/JUGF/AWEZ/KGQE.
+Skip the npm seed until step 2 succeeds and the SELECT at the bottom lists KDJG/JUGF/AWEZ/KGQE/HBSC.
 `);
   process.exit(1);
 }
@@ -151,4 +166,4 @@ for (const row of ACCOUNTS) {
 
 if (process.exitCode) process.exit(process.exitCode);
 
-console.log('\nDone. Next: POST /api/admin/session/ensure with each stationCode (KDJG, JUGF, AWEZ, KGQE).');
+console.log('\nDone. Next: POST /api/admin/session/ensure with each stationCode (KDJG, JUGF, AWEZ, KGQE, HBSC).');

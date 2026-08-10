@@ -1,6 +1,9 @@
 -- Seed dedicated-station portal accounts (bypasses PostgREST schema cache).
--- Run in Supabase SQL editor AFTER or AFTER force-fix-portal-accounts.sql
+-- Run in Supabase SQL editor AFTER force-fix-portal-accounts.sql
 -- (table must already have account_key column).
+--
+-- HBSC is seeded from .dev.vars via `npm run credentials:seed-stations`
+-- (HBSC_PORTAL_EMAIL/PASSWORD or HBSC_ID/HBSC_PASS) — do not commit its password here.
 
 insert into amazon_portal_credentials (
   account_key,

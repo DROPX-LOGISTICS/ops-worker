@@ -9,15 +9,19 @@ It provides:
 3. **Session management** — stored Amazon cookie/key, optional Puppeteer auto-login
 4. **Workforce portal** — `logistics.amazon.in` DSP associates roster (`transporter_id` ↔ ageing `driverId` / `tasId`) for unmapped driver names
 
-All Amazon-backed routes require header **`x-admin-key: <ADMIN_API_KEY>`**. Public routes are only health and the station allowlist.
+All Amazon-backed routes require header `x-admin-key: <ADMIN_API_KEY>`. Public routes are only health and the station allowlist.
 
 ## Frontend flow (current)
 
-| UI action | API |
-|---|---|
+
+| UI action             | API                                               |
+| --------------------- | ------------------------------------------------- |
 | Open / change station | `POST /api/admin/executive/driver-reconciliation` |
-| Run SCC | `POST /api/admin/executive/liability-summary` |
-| Remittance | `POST /api/admin/executive/remittance` |
+| Run SCC               | `POST /api/admin/executive/liability-summary`     |
+| Remittance            | `POST /api/admin/executive/remittance`            |
+| Cash In Associate     | `GET /api/admin/executive/cash-in-associate`      |
+| CIA network           | `GET /api/admin/executive/cash-in-associate/network` |
+
 
 Always send:
 
@@ -26,18 +30,26 @@ x-admin-key: <ADMIN_API_KEY>
 Content-Type: application/json
 ```
 
+
+
 ## Architecture
 
-| Layer | Role |
-|---|---|
-| `src/providers/StationDataProvider.ts` | Upstream interface (`AmazonLogisticsProvider`) |
-| `src/store/*` | Session, overrides, portal credentials (Supabase) |
-| `src/validators/*` | Pure check helpers (`pendingRecon`, remittance, liability) |
-| `src/services/validationPipeline.ts` | Full validate orchestration |
-| `src/session/*` | Auto-login, ensure / refresh |
-| `src/routes/executiveAmazon.ts` | Executive station / SCC / remittance endpoints |
-| `src/utils/expectedCash.ts` | Sum CASH `receivedAmount` from shipment lists |
-| `src/index.ts` | Hono routes + CORS |
+
+| Layer                                  | Role                                                       |
+| -------------------------------------- | ---------------------------------------------------------- |
+| `src/providers/StationDataProvider.ts` | Upstream interface (`AmazonLogisticsProvider`)             |
+| `src/store/*`                          | Session, overrides, portal credentials (Supabase)          |
+| `src/validators/*`                     | Pure check helpers (`pendingRecon`, remittance, liability) |
+| `src/services/validationPipeline.ts`   | Full validate orchestration                                |
+| `src/session/*`                        | Auto-login, ensure / refresh                               |
+| `src/routes/executiveAmazon.ts`        | Executive station / SCC / remittance endpoints             |
+| `src/services/cashInAssociate.ts`      | CIA + Cash At Station reconcile vs bank deposits           |
+| `src/services/ciaSnapshotRunner.ts`    | Daily 06:00 IST run; one-station-per-tick cron             |
+| `src/utils/expectedCash.ts`            | Sum CASH `receivedAmount` from shipment lists              |
+| `src/index.ts`                         | Hono routes + CORS + CIA crons                             |
+
+
+
 
 ## Setup
 
@@ -48,19 +60,49 @@ cp .dev.vars.example .dev.vars   # fill Supabase + ADMIN_API_KEY + Amazon portal
 
 Run `sql/schema.sql` in the Supabase SQL editor (`amazon_sessions`, overrides, notifications, `amazon_portal_credentials`).
 
+For Cash In Associate daily snapshots also run `sql/cash-in-associate-schema.sql` (and optionally `sql/api-response-cache-schema.sql`).
+
+## Cash In Associate (CIA) snapshots
+
+Daily network reconcile of ageing cash (CIA + Cash At Station) vs bank deposits.
+
+| Schedule | Cron (UTC) | Behavior |
+| -------- | ---------- | -------- |
+| **06:00 IST** | `30 0 * * *` | Start/resume daily run + workforce roster sync |
+| **Every 3 min** | `*/3 * * * *` | Process **exactly one** unfinished station |
+
+Workflow guarantees:
+
+1. Stations are claimed with an in-flight marker before Amazon calls; if the Worker dies mid-fetch, a later tick **reclaims** after ~4 minutes — no permanent skips.
+2. `stationsOk` / `stationsFailed` are **recounted from finished snapshots**, not stale in-memory counters.
+3. Bank deposits: **3 × ~15-day** portal windows (ending at `toDate`, `toDate−15`, `toDate−30`), deduped by remittanceId, filtered to the analysis window.
+4. Remittance detail failures (Amazon 500) are soft-failed so ageing + deposit totals still save.
+
+```http
+POST /api/admin/executive/cash-in-associate/refresh
+x-admin-key: …
+# no body → full network run (all allowlisted stations)
+
+GET /api/admin/executive/cash-in-associate/network
+```
+
 ```bash
 npm run typecheck
 npm run dev          # local worker + auto session ensure/login
 ```
 
+
+
 ## Local development
 
-| Command | What it does |
-|---|---|
-| `npm run dev` | Starts `wrangler.dev.toml` worker, then ensures a valid Amazon session (Node Puppeteer if needed) |
-| `npm run dev:worker` | Worker only (no session bootstrap) |
-| `npm run session:login` | Force local Puppeteer login → `POST /api/admin/session` |
-| `npm run dev:remote` | Remote wrangler (Browser Rendering available; needs stable network) |
+
+| Command                 | What it does                                                                                      |
+| ----------------------- | ------------------------------------------------------------------------------------------------- |
+| `npm run dev`           | Starts `wrangler.dev.toml` worker, then ensures a valid Amazon session (Node Puppeteer if needed) |
+| `npm run dev:worker`    | Worker only (no session bootstrap)                                                                |
+| `npm run session:login` | Force local Puppeteer login → `POST /api/admin/session`                                           |
+| `npm run dev:remote`    | Remote wrangler (Browser Rendering available; needs stable network)                               |
+
 
 **Important:** Cloudflare Browser Rendering is not available in local Miniflare. Local auto-login uses Node `puppeteer` (`scripts/local-session-login.mjs`). Production uses `@cloudflare/puppeteer` + the `BROWSER` binding.
 
@@ -87,7 +129,7 @@ Content-Type: application/json
 }
 ```
 
-2. Ensure session:
+1. Ensure session:
 
 ```bash
 npm run dev
@@ -96,31 +138,36 @@ npm run dev
 # POST /api/admin/session/refresh   # force re-login
 ```
 
-3. Frontend calls executive / validate APIs with `x-admin-key` — no Amazon cookie in the body; the worker uses the shared stored session.
+1. Frontend calls executive / validate APIs with `x-admin-key` — no Amazon cookie in the body; the worker uses the shared stored session.
 
 `GET /api/admin/credentials` returns a redacted preview (never the raw password).
 
-### Dedicated portal accounts (KDJG / JUGF / AWEZ / KGQE)
+### Dedicated portal accounts (KDJG / JUGF / AWEZ / KGQE / HBSC)
 
-These four stations cannot use the shared default Amazon user. Each has its own
+These stations cannot use the shared default Amazon user. Each has its own
 portal login + session (`account_key`).
 
-| Station | Portal account |
-|---|---|
-| KDJG | `KDJG` |
-| JUGF | `JUGF` |
-| AWEZ | `AWEZ` |
-| KGQE | `KGQE` |
-| All other allowlisted stations | `default` |
+
+| Station                        | Portal account |
+| ------------------------------ | -------------- |
+| KDJG                           | `KDJG`         |
+| JUGF                           | `JUGF`         |
+| AWEZ                           | `AWEZ`         |
+| KGQE                           | `KGQE`         |
+| HBSC                           | `HBSC`         |
+| All other allowlisted stations | `default`      |
+
 
 **Setup**
 
 1. Run `sql/migrate-multi-portal-accounts.sql` in Supabase (existing projects).
-2. Seed the four accounts:
+2. Seed the dedicated accounts:
 
 ```bash
 npm run credentials:seed-stations
 ```
+
+HBSC is read from `.dev.vars` (`HBSC_PORTAL_EMAIL` / `HBSC_PORTAL_PASSWORD`, or `HBSC_ID` / `HBSC_PASS`).
 
 Or upsert one-by-one:
 
@@ -130,23 +177,24 @@ x-admin-key: …
 Content-Type: application/json
 
 {
-  "accountKey": "KDJG",
-  "email": "xguptapr@amazon.com",
+  "accountKey": "HBSC",
+  "email": "bipradhl@amazon.com",
   "password": "…",
-  "defaultStationCode": "KDJG"
+  "defaultStationCode": "HBSC"
 }
 ```
 
-3. Ensure a session for that station (auto-login uses that account):
+1. Ensure a session for that station (auto-login uses that account):
 
 ```http
 POST /api/admin/session/ensure
-{ "stationCode": "KDJG" }
+{ "stationCode": "HBSC" }
 ```
 
-Executive / validate calls for those stations automatically resolve the matching
+Executive / validate / CIA calls for those stations automatically resolve the matching
 account and session — no frontend change beyond sending the correct `stationCode`.
 
+**Inactive:** `ERSN` is no longer allowlisted.
 ### Manual upload (fallback)
 
 If MFA / passkey blocks Puppeteer:
@@ -163,6 +211,8 @@ Content-Type: application/json
 { "cookie": "…", "xApiUsageKey": "…", "uploadedBy": "…" }
 ```
 
+
+
 ### Session expiry behaviour
 
 On Amazon 401/403/404, HTML login page, or sign-in redirect during validate:
@@ -171,18 +221,26 @@ On Amazon 401/403/404, HTML login page, or sign-in redirect during validate:
 2. Attempt one Puppeteer re-login and retry validate
 3. On failure, write `AMAZON_LOGIN_FAILED` / `AMAZON_SESSION_EXPIRED` to `owner_notifications` (+ email if Resend is configured)
 
+
+
 ## API
+
+
 
 ### Auth
 
-| Header | Required on |
-|---|---|
+
+| Header        | Required on                                                          |
+| ------------- | -------------------------------------------------------------------- |
 | `x-admin-key` | Every `/api/admin/*` route (all Amazon data + session + credentials) |
-| — | `GET /api/health`, `GET /api/stations` only |
+| —             | `GET /api/health`, `GET /api/stations` only                          |
+
 
 Missing/wrong key → `401 { "error": "Unauthorized", "code": "UNAUTHORIZED" }`.
 
 ---
+
+
 
 ### 1. Station change — drivers, reconciliation, expected cash
 
@@ -198,21 +256,25 @@ Content-Type: application/json
 
 **Upstream Amazon calls**
 
-| Step | Amazon resource |
-|---|---|
-| Active drivers | `/v1/getDrivers` (`codNAWS`) |
-| Reconciliation | `/v1/getDriverReconciliation` (`codNAWS`) |
+
+| Step                             | Amazon resource                                                                                                                                                             |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Active drivers                   | `/v1/getDrivers` (`codNAWS`)                                                                                                                                                |
+| Reconciliation                   | `/v1/getDriverReconciliation` (`codNAWS`)                                                                                                                                   |
 | Expected cash + recon correction | `/os/getDrillDownData` (`oculus`) — per status (`Delivered`, `Cash At Station`, `Cash With Associate`), `size: 10000` + `startingIndex` pagination; UTC day in unix seconds |
 
-**Pending vs completed recon (ageing `state`)**
+
+**Pending vs completed recon (ageing** `state`**)**
 
 Amazon's `overallPendingRecon` is cumulative and can include later days' open cash. For the requested date, reconciliation is corrected from ageing CASH packages:
 
-| Ageing `state` | Meaning |
-|---|---|
-| `Cash In Associate` / `Cash With Associate` | Pending recon |
-| `CASH_AT_STATION` / `Cash At Station` | Completed recon |
-| `delivered` / `Delivered` | Neither (still included in expected cash) |
+
+| Ageing `state`                              | Meaning                                   |
+| ------------------------------------------- | ----------------------------------------- |
+| `Cash In Associate` / `Cash With Associate` | Pending recon                             |
+| `CASH_AT_STATION` / `Cash At Station`       | Completed recon                           |
+| `delivered` / `Delivered`                   | Neither (still included in expected cash) |
+
 
 Each recon row gets `pendingReconAmount` / `completedReconAmount`, and `paymentInfo.overallPendingRecon` is overwritten with the pending sum. Response also includes station totals `pendingReconTotal` / `completedReconTotal`.
 
@@ -245,21 +307,25 @@ Each recon row gets `pendingReconAmount` / `completedReconAmount`, and `paymentI
 }
 ```
 
-| Shipment field | Ageing source |
-|---|---|
-| `barcode` | `trackingId` |
-| `shipmentNo` | `orderingOrderId` |
-| `employeeId` | matched driver's `employeeId`, or `null` if unmapped |
-| `paymentMethod` | `actualPaymentMethod` |
-| `shipmentStatus` | `state` |
-| `shipmentType` | `packageType` |
-| `updateDate` | date of `lastUpdatedTime` (`YYYY-MM-DD`) |
-| `receivableAmount.value` | `orderAmount` (÷100 → INR) |
-| `receivedAmount.value` | `receivableAmount` (÷100 → INR) |
+
+| Shipment field           | Ageing source                                        |
+| ------------------------ | ---------------------------------------------------- |
+| `barcode`                | `trackingId`                                         |
+| `shipmentNo`             | `orderingOrderId`                                    |
+| `employeeId`             | matched driver's `employeeId`, or `null` if unmapped |
+| `paymentMethod`          | `actualPaymentMethod`                                |
+| `shipmentStatus`         | `state`                                              |
+| `shipmentType`           | `packageType`                                        |
+| `updateDate`             | date of `lastUpdatedTime` (`YYYY-MM-DD`)             |
+| `receivableAmount.value` | `orderAmount` (÷100 → INR)                           |
+| `receivedAmount.value`   | `receivableAmount` (÷100 → INR)                      |
+
 
 Use `expectedCash.totalReceived` / `expectedCash.byDriver` in the UI. Unmapped rows use `tasId` as the associate id.
 
 ---
+
+
 
 ### 2. Run SCC — liability summary
 
@@ -292,6 +358,8 @@ Calls `/v1/getStationLiabilitySummary` and returns a UI helper check (all cash +
 Gate SCC on `check.passed`. If `false`, show `check.nonZeroFields`.
 
 ---
+
+
 
 ### 3. Remittance (bank deposits / day check)
 
@@ -326,6 +394,8 @@ Use `remittanceTotalCash` for the day cash total. Use `created` / `submitted` in
 
 ---
 
+
+
 ### 4. Full validate pipeline
 
 ```http
@@ -348,9 +418,9 @@ Content-Type: application/json
 
 Checks (stop at first unresolved failure):
 
-1. **pendingRecon** — every active driver's `overallPendingRecon` ≈ 0 (overridden from ageing `state` for the request date: Cash In Associate = pending)  
-2. **remittanceMatch** — business-day `CREATED`/`SUBMITTED` remittance sum equals denomination total  
-3. **liability** — liability cash + mPOS fields all ≈ 0  
+1. **pendingRecon** — every active driver's `overallPendingRecon` ≈ 0 (overridden from ageing `state` for the request date: Cash In Associate = pending)
+2. **remittanceMatch** — business-day `CREATED`/`SUBMITTED` remittance sum equals denomination total
+3. **liability** — liability cash + mPOS fields all ≈ 0
 
 - **200** — `{ status: "passed", steps, runId }`
 - **409** — `{ status: "blocked", blockedAt, steps, runId }` (expected business block)
@@ -358,29 +428,39 @@ Checks (stop at first unresolved failure):
 
 ---
 
+
+
 ### Admin route index
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/api/admin/executive/driver-reconciliation` | Drivers + recon + expected cash (station change) |
-| `POST` | `/api/admin/executive/liability-summary` | Liability + `check` (Run SCC) |
-| `POST` | `/api/admin/executive/remittance` | Remittance list |
-| `POST` | `/api/admin/validate` | Full cash validation pipeline |
-| `POST` | `/api/admin/session` | Manual cookie upload |
-| `GET` | `/api/admin/session/status` | Session + credentials summary |
-| `POST` | `/api/admin/session/ensure` | Probe / refresh if needed |
-| `POST` | `/api/admin/session/refresh` | Force Puppeteer re-login |
-| `POST` | `/api/admin/amazon/liability-summary` | Smoke-test liability probe |
-| `GET`/`PUT` | `/api/admin/credentials` | Portal credentials |
-| `GET` | `/api/admin/notifications?unacknowledged=true` | Owner alerts |
-| `POST` | `/api/admin/notifications/:id/ack` | Acknowledge alert |
-| `PUT` | `/api/admin/workforce/session` | Manual cookie upload (fallback) |
-| `GET` | `/api/admin/workforce/session/status` | Workforce session + roster + creds summary |
-| `POST` | `/api/admin/workforce/session/ensure` | Probe; auto Puppeteer refresh if needed |
-| `POST` | `/api/admin/workforce/session/refresh` | Force Puppeteer workforce login |
-| `POST` | `/api/admin/workforce/roster/sync` | Live sync associates → Supabase cache |
-| `GET` | `/api/admin/workforce/associates` | Search cached associates (`?q=&status=&limit=`) |
-| `GET` | `/api/admin/workforce/associates/:transporterId` | One associate by transporter id |
+
+| Method      | Path                                                                                       | Purpose                                          |
+| ----------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| `POST`      | `/api/admin/executive/driver-reconciliation`                                               | Drivers + recon + expected cash (station change) |
+| `POST`      | `/api/admin/executive/liability-summary`                                                   | Liability + `check` (Run SCC)                    |
+| `POST`      | `/api/admin/executive/remittance`                                                          | Remittance list                                  |
+| `POST`      | `/api/admin/validate`                                                                      | Full cash validation pipeline                    |
+| `POST`      | `/api/admin/session`                                                                       | Manual cookie upload                             |
+| `GET`       | `/api/admin/session/status`                                                                | Session + credentials summary                    |
+| `POST`      | `/api/admin/session/ensure`                                                                | Probe / refresh if needed                        |
+| `POST`      | `/api/admin/session/refresh`                                                               | Force Puppeteer re-login                         |
+| `GET`       | `/api/admin/executive/cash-in-associate?stationCode=`                                      | Station CIA snapshot                             |
+| `GET`       | `/api/admin/executive/cash-in-associate/network`                                            | Network CIA rollup                               |
+| `POST`      | `/api/admin/executive/cash-in-associate/refresh`                                            | Start full run, or `?stationCode=` for one       |
+| `POST`      | `/api/admin/internal/cia-snapshot/continue`                                                | Process one station of active run                |
+| `POST`      | `/api/admin/amazon/liability-summary`                                                      | Smoke-test liability probe                       |
+| `GET`/`PUT` | `/api/admin/credentials`                                                                   | Portal credentials                               |
+| `GET`       | `/api/admin/notifications?unacknowledged=true`                                             | Owner alerts                                     |
+| `POST`      | `/api/admin/notifications/:id/ack`                                                         | Acknowledge alert                                |
+| `PUT`       | `/api/admin/workforce/session`                                                             | Manual cookie upload (fallback)                  |
+| `GET`       | `/api/admin/workforce/session/status`                                                      | Workforce session + roster + creds summary       |
+| `POST`      | `/api/admin/workforce/session/ensure`                                                      | Probe; auto Puppeteer refresh if needed          |
+| `POST`      | `/api/admin/workforce/session/refresh`                                                     | Force Puppeteer workforce login                  |
+| `POST`      | `/api/admin/workforce/roster/sync`                                                         | Live sync associates → Supabase cache            |
+| `GET`       | `/api/admin/workforce/associates`                                                          | Search cached associates (`?q=&status=&limit=`)  |
+| `GET`       | `/api/admin/workforce/associates/:transporterId`                                           | One associate by transporter id                  |
+
+
+
 
 ### Workforce portal (unmapped drivers)
 
@@ -396,7 +476,7 @@ WORKFORCE_PORTAL_EMAIL=...
 WORKFORCE_PORTAL_PASSWORD=...
 ```
 
-3. Ensure / refresh (needs Browser Rendering on Worker, or local Node script):
+1. Ensure / refresh (needs Browser Rendering on Worker, or local Node script):
 
 ```http
 POST /api/admin/workforce/session/ensure
@@ -411,7 +491,7 @@ npm run workforce:login -- --headed --sync
 
 Login flow matches Amazon.in: open [/performance](https://logistics.amazon.in/performance?) → email → **Continue** → password → **Sign in** → land on logistics, then open workforce and capture cookies.
 
-4. Sync roster: `POST /api/admin/workforce/roster/sync`
+1. Sync roster: `POST /api/admin/workforce/roster/sync`
 
 Driver-reconciliation and remittance enrich unmapped drivers via `transporter_id` ↔ ageing `driverId` (`mappedFromWorkforce: true`).
 
@@ -422,7 +502,11 @@ Manual cookie upload (`PUT /api/admin/workforce/session`) remains as fallback if
 - `GET /api/health` — liveness
 - `GET /api/stations` — allowlisted station codes
 
+
+
 ## Deploy
+
+
 
 ### If local `wrangler deploy` fails with `fetch failed`
 
@@ -431,70 +515,3 @@ Auth can succeed while **uploads over ~100KB** are reset on some ISP/VPN paths. 
 1. **Phone hotspot** (or another network), then `npm run deploy`
 2. **GitHub Actions** (recommended) — see below
 
-### GitHub Actions deploy
-
-Workflow: `.github/workflows/deploy.yml` (runs on push to `main` and `workflow_dispatch`).
-
-1. Create an API token: [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens) → **Edit Cloudflare Workers**
-2. Repo **Settings → Secrets and variables → Actions → Repository secrets**:
-   - `CLOUDFLARE_API_TOKEN`
-   - `CLOUDFLARE_ACCOUNT_ID` = `ab2dba58727809ae8bf0a21edb5fe7b8` (tech@dropxlogistics.com)
-3. Push to `main` or **Actions → Deploy Worker → Run workflow**
-
-Local deploy (when the network allows):
-
-```bash
-npm run deploy          # uses wrangler deploy --env=""
-npm run deploy -- --env staging
-npm run tail
-```
-
-### Worker secrets (once per environment)
-
-Never commit these; never put them in `wrangler.toml` `[vars]`.
-
-From `.dev.vars` (does not print values):
-
-```bash
-node scripts/sync-secrets.mjs --env ""
-```
-
-Or one at a time:
-
-```bash
-npx wrangler secret put SUPABASE_URL --env=""
-npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY --env=""
-npx wrangler secret put ADMIN_API_KEY --env=""
-npx wrangler secret put AMAZON_PORTAL_EMAIL --env=""
-npx wrangler secret put AMAZON_PORTAL_PASSWORD --env=""
-# optional email alerts:
-npx wrangler secret put RESEND_API_KEY --env=""
-npx wrangler secret put OWNER_NOTIFICATION_EMAIL --env=""
-npx wrangler secret put NOTIFICATION_FROM_EMAIL --env=""
-```
-
-Requirements:
-
-- Cloudflare Workers account (Free can deploy; Paid recommended for Puppeteer CPU + higher Browser Rendering limits)
-- **Do not set `[limits].cpu_ms` on Free** — Cloudflare rejects it (`code: 100328`)
-- Schema applied in Supabase
-
-After first deploy, call `POST /api/admin/session/ensure` before executive / validate traffic.
-
-## Configuration (`wrangler.toml` `[vars]`)
-
-| Var | Purpose |
-|---|---|
-| `AMAZON_PROXY_BASE_URL` | Station-portal proxy gateway base URL |
-| `BUSINESS_DAY_START_HOUR_IST` | Business-day cutover hour IST (default `0`) |
-| `DATA_PROVIDER` | Provider factory key (currently `"amazon"`) |
-| `AMAZON_LOGIN_STATION_CODE` | Station for login page scrape only (default `TIRC`) |
-| `OWNER_EMAIL` | Notification recipient fallback |
-
-## Known constraints
-
-- MFA / passkey accounts cannot use auto-login — use manual session upload.
-- `x-admin-key` is a shared secret, not per-user auth.
-- CORS is currently `origin: '*'` — lock down in `src/index.ts` before production.
-- Amount equality uses `AMOUNT_EPSILON = 0.01` (`src/utils/number.ts`).
-- Expected cash comes from the ageing dashboard (`/os/getDrillDownData`), fetched per status with `size: 10000` + `startingIndex` pagination (same as CSV export). Packages with `actualPaymentMethod === CASH` are included even when `driverId` is not in getDrivers (`mappedToActiveDriver: false`); amounts are converted from paise → INR.

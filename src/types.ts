@@ -28,6 +28,14 @@ export interface Env {
   AMAZON_PORTAL_PASSWORD?: string;
   /** Station used only while scraping cookie/key during auto-login (e.g. TIRC). Not a validate station. */
   AMAZON_LOGIN_STATION_CODE?: string;
+  /**
+   * Dedicated HBSC portal login (cannot use default account).
+   * Also accepted as HBSC_ID / HBSC_PASS in .dev.vars for convenience.
+   */
+  HBSC_PORTAL_EMAIL?: string;
+  HBSC_PORTAL_PASSWORD?: string;
+  HBSC_ID?: string;
+  HBSC_PASS?: string;
 
   /**
    * Amazon Logistics workforce portal (logistics.amazon.in) — DSP associates roster.
@@ -351,7 +359,7 @@ export interface CiaStationSummary {
    * = ciaTotal + cashAtStationTotal.
    */
   ageingTotal: number;
-  /** Bank-deposit remittance cash in the same calendar window (dual 15-day fetches). */
+  /** Bank-deposit remittance cash in the same calendar window (triple ~15-day fetches). */
   depositedTotal: number;
   /** CIA cash still unmatched to remittance trackingIds. */
   pendingLiability: number;

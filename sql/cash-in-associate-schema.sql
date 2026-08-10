@@ -1,5 +1,5 @@
 -- Cash In Associate daily snapshots — run in Supabase SQL editor.
--- Populated by the 08:00 IST cron; read APIs serve from these tables.
+-- Populated by the 06:00 IST cron; read APIs serve from these tables.
 
 create table if not exists cia_snapshot_runs (
   id uuid primary key default gen_random_uuid(),

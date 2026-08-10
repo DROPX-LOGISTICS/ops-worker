@@ -4,7 +4,7 @@
  */
 export const ALLOWED_STATIONS: ReadonlySet<string> = new Set([
   'KGQA', 'KGQC', 'TLPA', 'TLPB', 'PEUA', 'KGQE', 'QLDA', 'KOZA', 'KLZH', 'KLZA',
-  'KTUB', 'ERSN', 'KTUR', 'ERSE', 'GDRD', 'XAPH', 'GNTF', 'GNTI', 'XAPL', 'GYMC',
+  'KTUB', 'KTUR', 'ERSE', 'GDRD', 'XAPH', 'GNTF', 'GNTI', 'XAPL', 'GYMC',
   'XAPI', 'NLRC', 'NLRE', 'NLRF', 'TIRC', 'JDBD', 'JGBA', 'RPRN', 'JUGD', 'SPBE',
   'JUGF', 'KANA', 'KDJE', 'KDJG', 'SBPD', 'JUGE', 'KTUO', 'HBSC', 'AWEZ',
 ]);
@@ -21,6 +21,7 @@ export const STATION_PORTAL_ACCOUNT: Readonly<Record<string, string>> = {
   JUGF: 'JUGF',
   AWEZ: 'AWEZ',
   KGQE: 'KGQE',
+  HBSC: 'HBSC',
 };
 
 /** Resolve which portal credential / session account to use for a station. */
@@ -71,9 +72,25 @@ export const CIA_REMITTANCE_DETAILS_CONCURRENCY = 3;
 
 /**
  * Cap on getRemittanceDetailsForExcel calls per station (subrequest budget).
+ * Kept modest because CIA also does 3 remittance list fetches + ageing pages.
  * Most recent remittances win; older CIA rows simply stay `pending`.
  */
-export const CIA_REMITTANCE_DETAILS_MAX = 20;
+export const CIA_REMITTANCE_DETAILS_MAX = 12;
+
+/**
+ * How many locked ~15-day bank-deposit portal windows to fetch per station.
+ * 3 × 15 days covers the 31-day CIA analysis window plus prior deposits.
+ */
+export const CIA_REMITTANCE_FETCH_COUNT = 3;
+
+/**
+ * Marker written while a station tick is in-flight. If the Worker dies after
+ * claiming but before finishing, a later tick reclaims stale markers.
+ */
+export const CIA_PROCESSING_MARKER = '__PROCESSING__';
+
+/** Reclaim in-flight station claims older than this (ms). */
+export const CIA_PROCESSING_STALE_MS = 4 * 60 * 1000;
 
 /**
  * TTL for read-API response caching (per-isolate). Identical requests within

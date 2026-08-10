@@ -76,10 +76,33 @@ function normalizeAccountKey(accountKey?: string | null): string {
   return key || DEFAULT_PORTAL_ACCOUNT;
 }
 
+function envBootstrapForAccount(
+  env: Env,
+  accountKey: string,
+): { email: string; password: string; defaultStationCode: string } | null {
+  if (accountKey === DEFAULT_PORTAL_ACCOUNT) {
+    const email = env.AMAZON_PORTAL_EMAIL?.trim();
+    const password = env.AMAZON_PORTAL_PASSWORD?.trim();
+    if (!email || !password) return null;
+    return {
+      email,
+      password,
+      defaultStationCode: env.AMAZON_LOGIN_STATION_CODE || 'TIRC',
+    };
+  }
+  if (accountKey === 'HBSC') {
+    const email = (env.HBSC_PORTAL_EMAIL || env.HBSC_ID || '').trim();
+    const password = (env.HBSC_PORTAL_PASSWORD || env.HBSC_PASS || '').trim();
+    if (!email || !password) return null;
+    return { email, password, defaultStationCode: 'HBSC' };
+  }
+  return null;
+}
+
 /**
  * Editable Amazon portal email/password used by Puppeteer auto-login.
  * Multiple accounts are keyed by `account_key` (default + dedicated stations).
- * Env AMAZON_PORTAL_EMAIL / PASSWORD bootstrap only the `default` account.
+ * Env bootstrap: AMAZON_PORTAL_* for `default`, HBSC_PORTAL_* (or HBSC_ID/PASS) for HBSC.
  */
 export class PortalCredentialStore {
   private readonly client: SupabaseClient;
@@ -95,13 +118,14 @@ export class PortalCredentialStore {
     const row = await this.fetchRow(key);
     if (row) return toPublic(row);
 
-    if (key === DEFAULT_PORTAL_ACCOUNT && this.env.AMAZON_PORTAL_EMAIL && this.env.AMAZON_PORTAL_PASSWORD) {
+    const boot = envBootstrapForAccount(this.env, key);
+    if (boot) {
       return {
-        accountKey: DEFAULT_PORTAL_ACCOUNT,
-        email: this.env.AMAZON_PORTAL_EMAIL,
-        passwordPreview: redactPassword(this.env.AMAZON_PORTAL_PASSWORD),
-        defaultStationCode: this.env.AMAZON_LOGIN_STATION_CODE || 'TIRC',
-        updatedBy: this.env.AMAZON_PORTAL_EMAIL,
+        accountKey: key,
+        email: boot.email,
+        passwordPreview: redactPassword(boot.password),
+        defaultStationCode: boot.defaultStationCode,
+        updatedBy: boot.email,
         updatedAt: new Date(0).toISOString(),
         lastLoginAt: null,
         lastLoginError: null,
@@ -124,11 +148,12 @@ export class PortalCredentialStore {
 
     const rows = (data as CredentialRow[] | null) ?? [];
     const listed = rows.map(toPublic);
-    if (!listed.some((r) => r.accountKey === DEFAULT_PORTAL_ACCOUNT)) {
-      const fallback = await this.getPublic(DEFAULT_PORTAL_ACCOUNT);
-      if ('configured' in fallback && fallback.configured) listed.unshift(fallback);
+    for (const key of [DEFAULT_PORTAL_ACCOUNT, 'HBSC']) {
+      if (listed.some((r) => r.accountKey === key)) continue;
+      const fallback = await this.getPublic(key);
+      if ('configured' in fallback && fallback.configured) listed.push(fallback);
     }
-    return listed;
+    return listed.sort((a, b) => a.accountKey.localeCompare(b.accountKey));
   }
 
   async getForLogin(accountKey?: string): Promise<PortalCredentials | null> {
@@ -136,13 +161,14 @@ export class PortalCredentialStore {
     const row = await this.fetchRow(key);
     if (row) return toCredentials(row);
 
-    if (key === DEFAULT_PORTAL_ACCOUNT && this.env.AMAZON_PORTAL_EMAIL && this.env.AMAZON_PORTAL_PASSWORD) {
+    const boot = envBootstrapForAccount(this.env, key);
+    if (boot) {
       return {
-        accountKey: DEFAULT_PORTAL_ACCOUNT,
-        email: this.env.AMAZON_PORTAL_EMAIL,
-        password: this.env.AMAZON_PORTAL_PASSWORD,
-        defaultStationCode: this.env.AMAZON_LOGIN_STATION_CODE || 'TIRC',
-        updatedBy: this.env.AMAZON_PORTAL_EMAIL,
+        accountKey: key,
+        email: boot.email,
+        password: boot.password,
+        defaultStationCode: boot.defaultStationCode,
+        updatedBy: boot.email,
         updatedAt: new Date(0).toISOString(),
         lastLoginAt: null,
         lastLoginError: null,

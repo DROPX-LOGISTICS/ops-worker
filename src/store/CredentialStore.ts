@@ -3,7 +3,7 @@ import type { StoredCredential } from '../types';
 /**
  * Persistence for Amazon station-portal sessions (cookie + x-api-usage-key).
  * Sessions are scoped by portal `accountKey` so dedicated-station logins
- * (KDJG / JUGF / AWEZ / KGQE) do not overwrite the shared default session.
+ * (KDJG / JUGF / AWEZ / KGQE / HBSC) do not overwrite the shared default session.
  */
 export interface CredentialStore {
   /** Current usable session for an account, or null. */

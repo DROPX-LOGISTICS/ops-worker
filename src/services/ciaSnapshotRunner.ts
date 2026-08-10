@@ -1,5 +1,9 @@
 import type { Env, CiaStationPayload, CiaStationSummary, CiaSnapshotRun } from '../types';
-import { ALLOWED_STATIONS, portalAccountKeyForStation } from '../config';
+import {
+  ALLOWED_STATIONS,
+  CIA_PROCESSING_MARKER,
+  portalAccountKeyForStation,
+} from '../config';
 import { createCiaSnapshotStore } from '../store/factory';
 import { createStationDataProvider } from '../providers/factory';
 import { ensureValidAmazonSession } from '../session/ensureSession';
@@ -29,6 +33,10 @@ function emptyPayload(fromDate: string, toDate: string): CiaStationPayload {
 
 function stationList(): string[] {
   return [...ALLOWED_STATIONS].sort();
+}
+
+function isFinishedSnapshot(status: string, error: string | null | undefined): boolean {
+  return !(status === 'error' && error === CIA_PROCESSING_MARKER);
 }
 
 async function fetchStationOnce(
@@ -97,10 +105,10 @@ export interface CiaTickResult {
 }
 
 /**
- * Process exactly one station of the active running run. Safe to call from
- * overlapping invocations: stations are claimed atomically on the run row.
- * One station per invocation keeps each call inside the Workers Free
- * 50-subrequest budget.
+ * Process exactly one unfinished station of the active running run.
+ * Selection is based on missing/stale snapshots (not a fragile index alone),
+ * so overlapping cron + continue ticks cannot skip stations when a Worker dies
+ * mid-fetch. Counters are always recounted from finished snapshots.
  */
 export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<CiaTickResult> {
   const store = createCiaSnapshotStore(env);
@@ -110,48 +118,57 @@ export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<
   }
 
   const stations = stationList();
-  const idx = run.nextStationIndex;
+  const snapshots = await store.listStationSnapshots(run.id);
+  const byCode = new Map(snapshots.map((s) => [s.stationCode, s]));
 
-  if (idx >= stations.length) {
-    await finalizeFromCounters(env, run);
+  const nextStation =
+    stations.find((code) => {
+      const snap = byCode.get(code);
+      if (!snap) return true;
+      return !isFinishedSnapshot(snap.status, snap.error);
+    }) ?? null;
+
+  if (!nextStation) {
+    await finalizeFromSnapshots(env, run.id, stations.length);
     return { run: await store.getRun(run.id), processedStation: null, done: true };
   }
 
-  const claimed = await store.claimNextStation(run.id, idx);
+  const accountKey = portalAccountKeyForStation(nextStation);
+  const claimed = await store.tryClaimStation({
+    runId: run.id,
+    stationCode: nextStation,
+    accountKey,
+    windowFrom: run.windowFrom,
+    windowTo: run.windowTo,
+  });
   if (!claimed) {
-    // Another tick got there first (or the run was stopped).
+    // Another tick owns this station (or just finished it). Don't process two at once.
     return { run, processedStation: null, done: false };
   }
 
-  const stationCode = stations[idx]!;
   const roster = await loadWorkforceRosterMap(env);
   const result = await fetchStationWithRetry(
     env,
-    stationCode,
+    nextStation,
     run.windowFrom,
     run.windowTo,
     roster.byTransporterId,
   );
 
-  let stationsOk = run.stationsOk;
-  let stationsFailed = run.stationsFailed;
-
   if (result.ok) {
-    stationsOk += 1;
     await store.upsertStationSnapshot({
       runId: run.id,
-      stationCode,
+      stationCode: nextStation,
       accountKey: result.accountKey,
       status: 'ok',
       summary: result.payload.summary,
       payload: result.payload,
     });
   } else {
-    stationsFailed += 1;
     const payload = emptyPayload(run.windowFrom, run.windowTo);
     await store.upsertStationSnapshot({
       runId: run.id,
-      stationCode,
+      stationCode: nextStation,
       accountKey: result.accountKey,
       status: 'error',
       error: result.error,
@@ -160,33 +177,48 @@ export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<
     });
   }
 
-  await store.incrementRunCounters({ runId: run.id, stationsOk, stationsFailed });
-
-  const done = idx + 1 >= stations.length;
+  const counters = await store.syncRunCountersFromSnapshots(run.id);
+  const done =
+    counters.finishedCount >= stations.length && counters.inFlightCount === 0;
   if (done) {
-    const updated = await store.getRun(run.id);
-    if (updated) await finalizeFromCounters(env, updated);
+    await finalizeFromSnapshots(env, run.id, stations.length);
   }
 
-  return { run: await store.getRun(run.id), processedStation: stationCode, done };
+  return {
+    run: await store.getRun(run.id),
+    processedStation: nextStation,
+    done,
+  };
 }
 
-async function finalizeFromCounters(env: Env, run: CiaSnapshotRun): Promise<void> {
+async function finalizeFromSnapshots(
+  env: Env,
+  runId: string,
+  stationsTotal: number,
+): Promise<void> {
   const store = createCiaSnapshotStore(env);
-  const total = stationList().length;
+  const counters = await store.syncRunCountersFromSnapshots(runId);
+  if (counters.inFlightCount > 0) return;
+  if (counters.finishedCount < stationsTotal) return;
+
   const status =
-    run.stationsOk === 0
+    counters.stationsOk === 0
       ? 'failed'
-      : run.stationsFailed > 0 || run.stationsOk < total
+      : counters.stationsFailed > 0 || counters.stationsOk < stationsTotal
         ? 'completed_with_errors'
         : 'completed';
+
   await store.finalizeRun({
-    runId: run.id,
+    runId,
     status,
-    stationsOk: run.stationsOk,
-    stationsFailed: run.stationsFailed,
+    stationsOk: counters.stationsOk,
+    stationsFailed: counters.stationsFailed,
     error:
-      run.stationsFailed > 0 ? `${run.stationsFailed} station(s) failed` : null,
+      counters.stationsFailed > 0
+        ? `${counters.stationsFailed} station(s) failed`
+        : counters.stationsOk < stationsTotal
+          ? `Only ${counters.stationsOk}/${stationsTotal} stations finished`
+          : null,
   });
 }
 
@@ -204,7 +236,12 @@ export async function startCiaSnapshotRun(
   const existing = await store.getActiveRunningRun();
   if (existing) {
     if (existing.asOfDate === window.asOfDate) {
-      return { run: existing, resumed: true };
+      // Heal counters / pick up any stations skipped by a killed tick.
+      const counters = await store.syncRunCountersFromSnapshots(existing.id);
+      if (counters.finishedCount >= stationList().length && counters.inFlightCount === 0) {
+        await finalizeFromSnapshots(env, existing.id, stationList().length);
+      }
+      return { run: (await store.getRun(existing.id)) ?? existing, resumed: true };
     }
     await store.finalizeRun({
       runId: existing.id,
@@ -285,6 +322,11 @@ export async function refreshCiaStation(
         stationsOk: 1,
         stationsFailed: 0,
       });
+    } else if (run.status === 'running') {
+      const counters = await store.syncRunCountersFromSnapshots(run.id);
+      if (counters.finishedCount >= stationList().length && counters.inFlightCount === 0) {
+        await finalizeFromSnapshots(env, run.id, stationList().length);
+      }
     }
     return { runId: run.id, snapshotStatus: 'ok' };
   }
@@ -307,17 +349,19 @@ export async function refreshCiaStation(
       stationsFailed: 1,
       error: result.error,
     });
+  } else if (run.status === 'running') {
+    await store.syncRunCountersFromSnapshots(run.id);
   }
   return { runId: run.id, snapshotStatus: 'error', error: result.error };
 }
 
-/** Daily cron (08:00 IST): start/resume the run; ticks do the station work. */
+/** Daily cron (06:00 IST): start/resume the run; ticks do the station work. */
 export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
   const { run } = await startCiaSnapshotRun(env);
   return run;
 }
 
-/** Ticker cron (every 2 min): advance the active run by one station. */
+/** Ticker cron (every 3 min): advance the active run by one station. */
 export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
   return processCiaSnapshotTick(env);
 }

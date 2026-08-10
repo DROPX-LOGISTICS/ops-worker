@@ -16,6 +16,7 @@ import {
   CIA_LOOKBACK_DAYS,
   CIA_REMITTANCE_DETAILS_CONCURRENCY,
   CIA_REMITTANCE_DETAILS_MAX,
+  CIA_REMITTANCE_FETCH_COUNT,
 } from '../config';
 import {
   addDaysYmd,
@@ -68,20 +69,22 @@ export function getCiaAnalysisWindow(nowMs = Date.now()): {
 
 /**
  * Amazon bank-deposits portal only returns ~16 days ending at the selected date.
- * Cover a ~31-day analysis window with two locked anchors:
- *   recent: end = toDate          → later half of the window
- *   earlier: end = toDate - 15    → earlier half of the window
+ * Cover the analysis window with three locked ~15-day anchors (most recent first):
+ *   0: end = toDate
+ *   1: end = toDate - 15
+ *   2: end = toDate - 30
+ * so deposits on ageing days and prior carry-over remittances are visible.
  */
-export function getCiaRemittanceAnchors(fromDate: string, toDate: string): {
-  recentAnchor: string;
-  earlierAnchor: string;
-} {
-  const recentAnchor = toDate;
-  const earlierAnchor = addDaysYmd(toDate, -(REMITTANCE_LOOKBACK_DAYS - 1));
-  return {
-    recentAnchor,
-    earlierAnchor: earlierAnchor < fromDate ? fromDate : earlierAnchor,
-  };
+export function getCiaRemittanceAnchors(fromDate: string, toDate: string): string[] {
+  const step = REMITTANCE_LOOKBACK_DAYS - 1; // 15
+  const anchors: string[] = [];
+  let anchor = toDate;
+  for (let i = 0; i < CIA_REMITTANCE_FETCH_COUNT; i++) {
+    const clamped = anchor < fromDate ? fromDate : anchor;
+    if (!anchors.includes(clamped)) anchors.push(clamped);
+    anchor = addDaysYmd(anchor, -step);
+  }
+  return anchors;
 }
 
 function dedupeRemittances(rows: RemittanceEntry[]): RemittanceEntry[] {
@@ -220,7 +223,7 @@ async function fetchRemittancesAtAnchor(
 
 /**
  * Reconcile Cash In Associate ageing for a station over the 31-day prior window.
- * Remittances: two ~15-day portal fetches (recent + earlier) to cover the full window.
+ * Remittances: three ~15-day portal fetches to cover the full window + prior deposits.
  * difference = ageingTotal - depositedTotal.
  */
 export async function reconcileCashInAssociate(args: {
@@ -253,16 +256,14 @@ export async function reconcileCashInAssociate(args: {
   const cashAtStationPackages = filterCashAtStationPackages(packagesRaw);
   const ageingCashPackages = filterAgeingCashPackages(packagesRaw);
 
-  const { recentAnchor, earlierAnchor } = getCiaRemittanceAnchors(fromDate, toDate);
+  const remittanceAnchors = getCiaRemittanceAnchors(fromDate, toDate);
 
-  // Two portal fetches in parallel — skip duplicate when anchors collapse.
-  const remittanceBatches =
-    earlierAnchor === recentAnchor
-      ? [await fetchRemittancesAtAnchor(provider, stationCode, recentAnchor, startHourIst, auth)]
-      : await Promise.all([
-          fetchRemittancesAtAnchor(provider, stationCode, recentAnchor, startHourIst, auth),
-          fetchRemittancesAtAnchor(provider, stationCode, earlierAnchor, startHourIst, auth),
-        ]);
+  // Three (~15-day) portal fetches in parallel — anchors dedupe when they collapse.
+  const remittanceBatches = await Promise.all(
+    remittanceAnchors.map((anchor) =>
+      fetchRemittancesAtAnchor(provider, stationCode, anchor, startHourIst, auth),
+    ),
+  );
 
   const allRemittances = dedupeRemittances(remittanceBatches.flat());
   const active = allRemittances.filter((r) => {
@@ -276,11 +277,13 @@ export async function reconcileCashInAssociate(args: {
     (r) => r.creationDate >= windowStart && r.creationDate <= windowEnd,
   );
 
-  // Earlier portal start ≈ earlierAnchor - 15 days; flag if analysis starts before that.
-  const portalCoveredFrom = addDaysYmd(earlierAnchor, -(REMITTANCE_LOOKBACK_DAYS - 1));
+  // Earliest portal start ≈ oldestAnchor - 15 days; flag if analysis starts before that.
+  const oldestAnchor = remittanceAnchors[remittanceAnchors.length - 1] ?? toDate;
+  const portalCoveredFrom = addDaysYmd(oldestAnchor, -(REMITTANCE_LOOKBACK_DAYS - 1));
   const limitedByRemittanceWindow = fromDate < portalCoveredFrom;
 
   // Subrequest budget: fetch details for the most recent remittances only.
+  // Soft-fail: a single Amazon 500 on details must not fail the whole station.
   const detailsRemittances = [...windowRemittances]
     .sort((a, b) => b.creationDate - a.creationDate)
     .slice(0, CIA_REMITTANCE_DETAILS_MAX);
@@ -290,6 +293,7 @@ export async function reconcileCashInAssociate(args: {
     provider,
     auth,
     CIA_REMITTANCE_DETAILS_CONCURRENCY,
+    { softFail: true },
   );
 
   const ledger = buildLedgerDays({

@@ -75,8 +75,10 @@ export async function buildClearedTrackingMap(
   provider: StationDataProvider,
   auth: AmazonAuthContext,
   concurrency = 8,
+  opts?: { softFail?: boolean },
 ): Promise<Map<string, ClearedTracking>> {
   const map = new Map<string, ClearedTracking>();
+  const softFail = opts?.softFail === true;
   const unique = [
     ...new Map(
       remittances
@@ -85,16 +87,30 @@ export async function buildClearedTrackingMap(
     ).values(),
   ];
 
-  const detailsList: Array<{ remittance: RemittanceEntry; details: Awaited<ReturnType<StationDataProvider['getRemittanceDetailsForExcel']>> }> = [];
+  const detailsList: Array<{
+    remittance: RemittanceEntry;
+    details: Awaited<ReturnType<StationDataProvider['getRemittanceDetailsForExcel']>>;
+  }> = [];
   for (let i = 0; i < unique.length; i += concurrency) {
     const chunk = unique.slice(i, i + concurrency);
     const batch = await Promise.all(
       chunk.map(async (r) => {
-        const details = await provider.getRemittanceDetailsForExcel(r.remittanceId, auth);
-        return { remittance: r, details };
+        try {
+          const details = await provider.getRemittanceDetailsForExcel(r.remittanceId, auth);
+          return { remittance: r, details };
+        } catch (err) {
+          if (!softFail) throw err;
+          console.warn(
+            `getRemittanceDetailsForExcel failed for ${r.remittanceId}:`,
+            err instanceof Error ? err.message : err,
+          );
+          return null;
+        }
       }),
     );
-    detailsList.push(...batch);
+    for (const row of batch) {
+      if (row) detailsList.push(row);
+    }
   }
 
   for (const { remittance, details } of detailsList) {
