@@ -167,8 +167,6 @@ portal login + session (`account_key`).
 npm run credentials:seed-stations
 ```
 
-HBSC is read from `.dev.vars` (`HBSC_PORTAL_EMAIL` / `HBSC_PORTAL_PASSWORD`, or `HBSC_ID` / `HBSC_PASS`).
-
 Or upsert one-by-one:
 
 ```http

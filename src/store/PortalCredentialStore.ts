@@ -80,29 +80,22 @@ function envBootstrapForAccount(
   env: Env,
   accountKey: string,
 ): { email: string; password: string; defaultStationCode: string } | null {
-  if (accountKey === DEFAULT_PORTAL_ACCOUNT) {
-    const email = env.AMAZON_PORTAL_EMAIL?.trim();
-    const password = env.AMAZON_PORTAL_PASSWORD?.trim();
-    if (!email || !password) return null;
-    return {
-      email,
-      password,
-      defaultStationCode: env.AMAZON_LOGIN_STATION_CODE || 'TIRC',
-    };
-  }
-  if (accountKey === 'HBSC') {
-    const email = (env.HBSC_PORTAL_EMAIL || env.HBSC_ID || '').trim();
-    const password = (env.HBSC_PORTAL_PASSWORD || env.HBSC_PASS || '').trim();
-    if (!email || !password) return null;
-    return { email, password, defaultStationCode: 'HBSC' };
-  }
-  return null;
+  if (accountKey !== DEFAULT_PORTAL_ACCOUNT) return null;
+  const email = env.AMAZON_PORTAL_EMAIL?.trim();
+  const password = env.AMAZON_PORTAL_PASSWORD?.trim();
+  if (!email || !password) return null;
+  return {
+    email,
+    password,
+    defaultStationCode: env.AMAZON_LOGIN_STATION_CODE || 'TIRC',
+  };
 }
 
 /**
  * Editable Amazon portal email/password used by Puppeteer auto-login.
  * Multiple accounts are keyed by `account_key` (default + dedicated stations).
- * Env bootstrap: AMAZON_PORTAL_* for `default`, HBSC_PORTAL_* (or HBSC_ID/PASS) for HBSC.
+ * Env AMAZON_PORTAL_EMAIL / PASSWORD bootstrap only the `default` account;
+ * dedicated stations (AWEZ, HBSC, …) live in amazon_portal_credentials.
  */
 export class PortalCredentialStore {
   private readonly client: SupabaseClient;
@@ -148,12 +141,11 @@ export class PortalCredentialStore {
 
     const rows = (data as CredentialRow[] | null) ?? [];
     const listed = rows.map(toPublic);
-    for (const key of [DEFAULT_PORTAL_ACCOUNT, 'HBSC']) {
-      if (listed.some((r) => r.accountKey === key)) continue;
-      const fallback = await this.getPublic(key);
-      if ('configured' in fallback && fallback.configured) listed.push(fallback);
+    if (!listed.some((r) => r.accountKey === DEFAULT_PORTAL_ACCOUNT)) {
+      const fallback = await this.getPublic(DEFAULT_PORTAL_ACCOUNT);
+      if ('configured' in fallback && fallback.configured) listed.unshift(fallback);
     }
-    return listed.sort((a, b) => a.accountKey.localeCompare(b.accountKey));
+    return listed;
   }
 
   async getForLogin(accountKey?: string): Promise<PortalCredentials | null> {

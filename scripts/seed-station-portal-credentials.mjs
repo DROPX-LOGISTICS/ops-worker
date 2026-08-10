@@ -69,22 +69,13 @@ const ACCOUNTS = [
     password: 'Kgqe@123',
     default_station_code: 'KGQE',
   },
-];
-
-const hbscEmail = (process.env.HBSC_PORTAL_EMAIL || process.env.HBSC_ID || '').trim();
-const hbscPass = (process.env.HBSC_PORTAL_PASSWORD || process.env.HBSC_PASS || '').trim();
-if (hbscEmail && hbscPass) {
-  ACCOUNTS.push({
+  {
     account_key: 'HBSC',
-    email: hbscEmail,
-    password: hbscPass,
+    email: 'bipradhl@amazon.com',
+    password: 'Dolphin@123',
     default_station_code: 'HBSC',
-  });
-} else {
-  console.warn(
-    'HBSC credentials missing in .dev.vars (set HBSC_PORTAL_EMAIL/PASSWORD or HBSC_ID/HBSC_PASS) — skipping HBSC seed.',
-  );
-}
+  },
+];
 
 async function diagnoseSchema() {
   // Ask PostgREST what it currently knows about the table.
