@@ -63,6 +63,24 @@ export const AMAZON_RESOURCES = {
   },
 } as const;
 
+/** Prior calendar days for Cash In Associate snapshots (excludes today). */
+export const CIA_LOOKBACK_DAYS = 31;
+
+/** Max concurrent getRemittanceDetailsForExcel calls in CIA reconcile. */
+export const CIA_REMITTANCE_DETAILS_CONCURRENCY = 3;
+
+/**
+ * Cap on getRemittanceDetailsForExcel calls per station (subrequest budget).
+ * Most recent remittances win; older CIA rows simply stay `pending`.
+ */
+export const CIA_REMITTANCE_DETAILS_MAX = 20;
+
+/**
+ * TTL for read-API response caching (per-isolate). Identical requests within
+ * this window share one upstream (Amazon/Supabase) round-trip.
+ */
+export const API_CACHE_TTL_MS = 60_000;
+
 /** Tolerance below which a monetary/count value is treated as zero. */
 export const AMOUNT_EPSILON = 0.01;
 

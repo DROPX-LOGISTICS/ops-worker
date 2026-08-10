@@ -1,7 +1,7 @@
 import type { Context } from 'hono';
-import type { Env } from '../types';
+import type { Env, AmazonAuthContext } from '../types';
 import { ValidationInputError } from '../errors';
-import { ALLOWED_STATIONS } from '../config';
+import { ALLOWED_STATIONS, API_CACHE_TTL_MS } from '../config';
 import { getBusinessDayRange, todayIstYmd } from '../utils/dateRange';
 import { createStationDataProvider } from '../providers/factory';
 import { ensureValidAmazonSession } from '../session/ensureSession';
@@ -13,16 +13,25 @@ import {
   reconcileRemittancePending,
 } from '../services/remittancePending';
 import { round2 } from '../utils/number';
+import { cachedJson, invalidateCache } from '../utils/ttlCache';
+import { createApiResponseCacheStore } from '../store/factory';
 
 interface StationDateBody {
   stationCode?: string;
   /** YYYY-MM-DD business date in IST. Defaults to today (IST). */
   date?: string;
+  /** When true, bypass the 60s response cache and recompute from Amazon. */
+  fresh?: boolean;
 }
 
 async function parseStationDate(
   c: Context<{ Bindings: Env }>,
-): Promise<{ stationCode: string; date: string; range: ReturnType<typeof getBusinessDayRange> }> {
+): Promise<{
+  stationCode: string;
+  date: string;
+  range: ReturnType<typeof getBusinessDayRange>;
+  fresh: boolean;
+}> {
   let body: StationDateBody = {};
   try {
     body = await c.req.json<StationDateBody>();
@@ -40,40 +49,73 @@ async function parseStationDate(
 
   const date = body.date && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : todayIstYmd();
   const range = getBusinessDayRange(date, Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '0'));
-  return { stationCode, date, range };
+  const fresh =
+    body.fresh === true || (c.req.query('fresh') ?? '').trim() === '1';
+  return { stationCode, date, range, fresh };
 }
 
-async function requireAmazonSession(
-  c: Context<{ Bindings: Env }>,
+/** Session failure that must be returned as-is and never cached. */
+class SessionUnavailable extends Error {
+  constructor(
+    readonly payload: Record<string, unknown>,
+    readonly httpStatus: 401 | 503,
+  ) {
+    super('Amazon session unavailable');
+    this.name = 'SessionUnavailable';
+  }
+}
+
+async function requireAmazonSessionOrThrow(
+  env: Env,
   triggeredBy: string,
   stationCode?: string,
-) {
-  const ensured = await ensureValidAmazonSession(c.env, {
+): Promise<{ auth: AmazonAuthContext; sessionSource: string; accountKey: string }> {
+  const ensured = await ensureValidAmazonSession(env, {
     triggeredBy,
     notifyOnFailure: true,
     stationCode,
   });
   if (!ensured.ok) {
-    return {
-      ok: false as const,
-      response: c.json(
-        {
-          status: 'failed',
-          code: ensured.code,
-          error: ensured.error,
-          accountKey: ensured.accountKey,
-          needsLocalLogin: Boolean(ensured.needsLocalLogin),
-        },
-        ensured.needsLocalLogin ? 503 : 401,
-      ),
-    };
+    throw new SessionUnavailable(
+      {
+        status: 'failed',
+        code: ensured.code,
+        error: ensured.error,
+        accountKey: ensured.accountKey,
+        needsLocalLogin: Boolean(ensured.needsLocalLogin),
+      },
+      ensured.needsLocalLogin ? 503 : 401,
+    );
   }
-  return {
-    ok: true as const,
-    auth: ensured.auth,
-    sessionSource: ensured.source,
-    accountKey: ensured.accountKey,
-  };
+  return { auth: ensured.auth, sessionSource: ensured.source, accountKey: ensured.accountKey };
+}
+
+/**
+ * Run `compute` behind L1 (memory) + L2 (Supabase) 60s TTL cache.
+ * Session failures pass through uncached with their proper HTTP status.
+ * Pass `fresh: true` to bypass and force a recompute.
+ */
+async function respondCached(
+  c: Context<{ Bindings: Env }>,
+  key: string,
+  fresh: boolean,
+  compute: () => Promise<Record<string, unknown>>,
+) {
+  const shared = createApiResponseCacheStore(c.env);
+  if (fresh) {
+    invalidateCache(key);
+    await shared.deletePrefix(key).catch(() => undefined);
+  }
+
+  try {
+    const { value, cacheHit } = await cachedJson(key, API_CACHE_TTL_MS, compute, shared);
+    return c.json({ ...value, cached: fresh ? false : cacheHit });
+  } catch (err) {
+    if (err instanceof SessionUnavailable) {
+      return c.json(err.payload, err.httpStatus);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -87,51 +129,56 @@ async function requireAmazonSession(
  * { "stationCode": "JDBD", "date": "2026-08-02" }
  */
 export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>) {
-  const { stationCode, date, range } = await parseStationDate(c);
+  const { stationCode, date, range, fresh } = await parseStationDate(c);
 
-  const session = await requireAmazonSession(c, `executive-recon:${stationCode}`, stationCode);
-  if (!session.ok) return session.response;
+  return respondCached(c, `exec:recon:${stationCode}:${date}`, fresh, async () => {
+    const session = await requireAmazonSessionOrThrow(
+      c.env,
+      `executive-recon:${stationCode}`,
+      stationCode,
+    );
 
-  const provider = createStationDataProvider(c.env);
-  const drivers = await provider.getActiveDrivers(stationCode, session.auth);
+    const provider = createStationDataProvider(c.env);
+    const drivers = await provider.getActiveDrivers(stationCode, session.auth);
 
-  const [rawReconciliation, ageingPackages, roster] = await Promise.all([
-    provider.getDriverReconciliation(stationCode, range, drivers, session.auth),
-    provider.getAgeingDrillDownData(stationCode, date, session.auth),
-    loadWorkforceRosterMap(c.env),
-  ]);
+    const [rawReconciliation, ageingPackages, roster] = await Promise.all([
+      provider.getDriverReconciliation(stationCode, range, drivers, session.auth),
+      provider.getAgeingDrillDownData(stationCode, date, session.auth),
+      loadWorkforceRosterMap(c.env),
+    ]);
 
-  const expectedCash = buildExpectedCashFromAgeing(
-    drivers,
-    ageingPackages,
-    roster.byTransporterId,
-  );
-  // Ageing state is date-scoped; Amazon overallPendingRecon is cumulative.
-  const {
-    entries: reconciliation,
-    pendingReconTotal,
-    completedReconTotal,
-  } = enrichReconciliationWithAgeing(rawReconciliation, ageingPackages);
+    const expectedCash = buildExpectedCashFromAgeing(
+      drivers,
+      ageingPackages,
+      roster.byTransporterId,
+    );
+    // Ageing state is date-scoped; Amazon overallPendingRecon is cumulative.
+    const {
+      entries: reconciliation,
+      pendingReconTotal,
+      completedReconTotal,
+    } = enrichReconciliationWithAgeing(rawReconciliation, ageingPackages);
 
-  return c.json({
-    status: 'ok',
-    stationCode,
-    date,
-    dateRange: range,
-    sessionSource: session.sessionSource,
-    accountKey: session.accountKey,
-    drivers,
-    driverCount: drivers.length,
-    reconciliation,
-    reconciliationCount: reconciliation.length,
-    pendingReconTotal,
-    completedReconTotal,
-    expectedCash,
-    workforceRoster: {
-      source: roster.source,
-      count: roster.count,
-      syncedAt: roster.syncedAt,
-    },
+    return {
+      status: 'ok',
+      stationCode,
+      date,
+      dateRange: range,
+      sessionSource: session.sessionSource,
+      accountKey: session.accountKey,
+      drivers,
+      driverCount: drivers.length,
+      reconciliation,
+      reconciliationCount: reconciliation.length,
+      pendingReconTotal,
+      completedReconTotal,
+      expectedCash,
+      workforceRoster: {
+        source: roster.source,
+        count: roster.count,
+        syncedAt: roster.syncedAt,
+      },
+    };
   });
 }
 
@@ -144,24 +191,29 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
  * { "stationCode": "JDBD", "date": "2026-08-02" }
  */
 export async function liabilitySummaryExecutiveHandler(c: Context<{ Bindings: Env }>) {
-  const { stationCode, date, range } = await parseStationDate(c);
+  const { stationCode, date, range, fresh } = await parseStationDate(c);
 
-  const session = await requireAmazonSession(c, `executive-liability:${stationCode}`, stationCode);
-  if (!session.ok) return session.response;
+  return respondCached(c, `exec:liability:${stationCode}:${date}`, fresh, async () => {
+    const session = await requireAmazonSessionOrThrow(
+      c.env,
+      `executive-liability:${stationCode}`,
+      stationCode,
+    );
 
-  const provider = createStationDataProvider(c.env);
-  const summary = await provider.getStationLiabilitySummary(stationCode, range, session.auth);
-  const check = checkLiability(summary);
+    const provider = createStationDataProvider(c.env);
+    const summary = await provider.getStationLiabilitySummary(stationCode, range, session.auth);
+    const check = checkLiability(summary);
 
-  return c.json({
-    status: 'ok',
-    stationCode,
-    date,
-    dateRange: range,
-    sessionSource: session.sessionSource,
-    accountKey: session.accountKey,
-    summary,
-    check,
+    return {
+      status: 'ok',
+      stationCode,
+      date,
+      dateRange: range,
+      sessionSource: session.sessionSource,
+      accountKey: session.accountKey,
+      summary,
+      check,
+    };
   });
 }
 
@@ -175,83 +227,88 @@ export async function liabilitySummaryExecutiveHandler(c: Context<{ Bindings: En
  * { "stationCode": "JDBD", "date": "2026-08-03" }
  */
 export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
-  const { stationCode, date, range } = await parseStationDate(c);
+  const { stationCode, date, range, fresh } = await parseStationDate(c);
   const startHourIst = Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '0');
 
-  const session = await requireAmazonSession(c, `executive-remittance:${stationCode}`, stationCode);
-  if (!session.ok) return session.response;
+  return respondCached(c, `exec:remittance:${stationCode}:${date}`, fresh, async () => {
+    const session = await requireAmazonSessionOrThrow(
+      c.env,
+      `executive-remittance:${stationCode}`,
+      stationCode,
+    );
 
-  const provider = createStationDataProvider(c.env);
+    const provider = createStationDataProvider(c.env);
 
-  const [drivers, all, sameDayPackages, roster] = await Promise.all([
-    provider.getActiveDrivers(stationCode, session.auth),
-    provider.getRemittances(stationCode, range, session.auth),
-    provider.getAgeingDrillDownData(stationCode, date, session.auth),
-    loadWorkforceRosterMap(c.env),
-  ]);
+    const [drivers, all, sameDayPackages, roster] = await Promise.all([
+      provider.getActiveDrivers(stationCode, session.auth),
+      provider.getRemittances(stationCode, range, session.auth),
+      provider.getAgeingDrillDownData(stationCode, date, session.auth),
+      loadWorkforceRosterMap(c.env),
+    ]);
 
-  const dayRemittances = all.filter(
-    (r) => r.creationDate >= range.startTime && r.creationDate <= range.endTime,
-  );
+    const dayRemittances = all.filter(
+      (r) => r.creationDate >= range.startTime && r.creationDate <= range.endTime,
+    );
 
-  const created = dayRemittances.filter((r) => r.status === 'CREATED');
-  const submitted = dayRemittances.filter((r) => r.status === 'SUBMITTED');
+    const created = dayRemittances.filter((r) => r.status === 'CREATED');
+    const submitted = dayRemittances.filter((r) => r.status === 'SUBMITTED');
 
-  const remittanceCodes = [
-    ...new Set(
-      submitted
-        .map((r) => (r.remittanceCode ?? '').trim())
-        .filter(Boolean),
-    ),
-  ];
+    const remittanceCodes = [
+      ...new Set(
+        submitted
+          .map((r) => (r.remittanceCode ?? '').trim())
+          .filter(Boolean),
+      ),
+    ];
 
-  const createdTotal = round2(created.reduce((sum, r) => sum + (r.actualAmount?.value ?? 0), 0));
-  const submittedTotal = round2(submitted.reduce((sum, r) => sum + (r.actualAmount?.value ?? 0), 0));
-  const remittanceTotalCash = round2(createdTotal + submittedTotal);
+    const createdTotal = round2(created.reduce((sum, r) => sum + (r.actualAmount?.value ?? 0), 0));
+    const submittedTotal = round2(submitted.reduce((sum, r) => sum + (r.actualAmount?.value ?? 0), 0));
+    const remittanceTotalCash = round2(createdTotal + submittedTotal);
 
-  const sameDayExpectedCash = buildExpectedCashFromAgeing(
-    drivers,
-    sameDayPackages,
-    roster.byTransporterId,
-  );
-  const sameDayActive = dayRemittances.filter(
-    (r) => r.status === 'CREATED' || r.status === 'SUBMITTED',
-  );
+    const sameDayExpectedCash = buildExpectedCashFromAgeing(
+      drivers,
+      sameDayPackages,
+      roster.byTransporterId,
+    );
+    const sameDayActive = dayRemittances.filter(
+      (r) => r.status === 'CREATED' || r.status === 'SUBMITTED',
+    );
 
-  const ledgerResult = await reconcileRemittancePending({
-    stationCode,
-    requestDate: date,
-    startHourIst,
-    drivers,
-    allRemittances: all,
-    sameDayExpectedCash,
-    sameDayRemittances: sameDayActive,
-    provider,
-    auth: session.auth,
-    workforceByTransporterId: roster.byTransporterId,
-  });
+    const ledgerResult = await reconcileRemittancePending({
+      stationCode,
+      requestDate: date,
+      startHourIst,
+      drivers,
+      allRemittances: all,
+      sameDayExpectedCash,
+      sameDayRemittances: sameDayActive,
+      provider,
+      auth: session.auth,
+      workforceByTransporterId: roster.byTransporterId,
+    });
 
-  return c.json({
-    status: 'ok',
-    stationCode,
-    date,
-    dateRange: range,
-    sessionSource: session.sessionSource,
-    accountKey: session.accountKey,
-    remittanceTotalCash,
-    created,
-    createdCount: created.length,
-    createdTotal,
-    submitted,
-    submittedCount: submitted.length,
-    submittedTotal,
-    remittanceCodes,
-    summary: ledgerResult.summary,
-    ledger: ledgerResult.ledger,
-    workforceRoster: {
-      source: roster.source,
-      count: roster.count,
-      syncedAt: roster.syncedAt,
-    },
+    return {
+      status: 'ok',
+      stationCode,
+      date,
+      dateRange: range,
+      sessionSource: session.sessionSource,
+      accountKey: session.accountKey,
+      remittanceTotalCash,
+      created,
+      createdCount: created.length,
+      createdTotal,
+      submitted,
+      submittedCount: submitted.length,
+      submittedTotal,
+      remittanceCodes,
+      summary: ledgerResult.summary,
+      ledger: ledgerResult.ledger,
+      workforceRoster: {
+        source: roster.source,
+        count: roster.count,
+        syncedAt: roster.syncedAt,
+      },
+    };
   });
 }

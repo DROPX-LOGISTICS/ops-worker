@@ -23,6 +23,11 @@ DATA_PROVIDER = "amazon"
 AMAZON_LOGIN_STATION_CODE = "TIRC"
 # Optional: WORKFORCE_BASE_URL / WORKFORCE_COMPANY_ID (defaults in src/config.ts)
 
+# CIA snapshots: daily start at 08:00 IST (02:30 UTC) + 2-minute ticker that
+# advances the active run one station per invocation (Free-plan subrequest cap).
+[triggers]
+crons = ["30 2 * * *", "*/2 * * * *"]
+
 # Secrets (Set locally via .dev.vars or production via 'wrangler secret put')
 # - SUPABASE_URL
 # - SUPABASE_SERVICE_ROLE_KEY
@@ -44,6 +49,9 @@ AMAZON_PROXY_BASE_URL = "https://www.amazonlogistics.eu"
 BUSINESS_DAY_START_HOUR_IST = "0"
 DATA_PROVIDER = "amazon"
 AMAZON_LOGIN_STATION_CODE = "TIRC"
+
+[env.staging.triggers]
+crons = ["30 2 * * *", "*/2 * * * *"]
 
 # Staging Secrets (Set via 'wrangler secret put --env staging')
 # - SUPABASE_URL

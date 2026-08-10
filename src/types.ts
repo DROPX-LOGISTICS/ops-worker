@@ -331,6 +331,91 @@ export interface RemittanceLedgerSummary {
 }
 
 // ---------------------------------------------------------------------------
+// Cash In Associate daily snapshot (missing-cash)
+// ---------------------------------------------------------------------------
+export type CiaSnapshotRunStatus =
+  | 'running'
+  | 'completed'
+  | 'completed_with_errors'
+  | 'failed';
+
+export type CiaStationSnapshotStatus = 'ok' | 'error';
+
+export interface CiaStationSummary {
+  /** Cash In Associate only (CASH + pending state) from ageing — INR. */
+  ciaTotal: number;
+  /** Cash At Station only (CASH + completed state) from ageing — INR. */
+  cashAtStationTotal: number;
+  /**
+   * All ageing CASH with state Cash In Associate OR Cash At Station.
+   * = ciaTotal + cashAtStationTotal.
+   */
+  ageingTotal: number;
+  /** Bank-deposit remittance cash in the same calendar window (dual 15-day fetches). */
+  depositedTotal: number;
+  /** CIA cash still unmatched to remittance trackingIds. */
+  pendingLiability: number;
+  /** CIA cash cleared via remittance trackingId match in the window. */
+  clearedInWindow: number;
+  /**
+   * Ageing total cash − deposited cash:
+   * ageingTotal (CIA + Cash At Station) − depositedTotal.
+   */
+  cashDifference: number;
+  /** Same as cashDifference (ageingTotal − depositedTotal). */
+  difference: number;
+  shipmentCount: number;
+  pendingDriverCount: number;
+  limitedByRemittanceWindow: boolean;
+}
+
+export interface CiaPendingDriver {
+  driverName: string;
+  tasId: string | null;
+  employeeId: number | null;
+  operationalStatus: string | null;
+  mappedFromWorkforce?: boolean;
+  amount: number;
+  shipmentCount: number;
+  /** Distinct keptOnDate values still pending. */
+  dates: string[];
+  shipments: RemittanceLedgerShipment[];
+}
+
+export interface CiaStationPayload {
+  window: { from: string; to: string };
+  summary: CiaStationSummary;
+  ledger: RemittanceLedgerDay[];
+  pendingDrivers: CiaPendingDriver[];
+}
+
+export interface CiaSnapshotRun {
+  id: string;
+  asOfDate: string;
+  windowFrom: string;
+  windowTo: string;
+  status: CiaSnapshotRunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  stationsTotal: number;
+  stationsOk: number;
+  stationsFailed: number;
+  nextStationIndex: number;
+  error: string | null;
+}
+
+export interface CiaStationSnapshot {
+  runId: string;
+  stationCode: string;
+  accountKey: string;
+  status: CiaStationSnapshotStatus;
+  error: string | null;
+  fetchedAt: string;
+  summary: CiaStationSummary;
+  payload: CiaStationPayload;
+}
+
+// ---------------------------------------------------------------------------
 // API contract (frontend <-> worker)
 // ---------------------------------------------------------------------------
 export interface AmazonAuthContext {

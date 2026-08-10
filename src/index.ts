@@ -16,6 +16,13 @@ import {
   liabilitySummaryExecutiveHandler,
   remittanceHandler,
 } from './routes/executiveAmazon';
+import {
+  ciaStationHandler,
+  ciaNetworkHandler,
+  ciaRefreshHandler,
+  ciaContinueHandler,
+} from './routes/cashInAssociate';
+import { ciaDailyCron, ciaTickerCron } from './services/ciaSnapshotRunner';
 import { listNotificationsHandler, acknowledgeNotificationHandler } from './routes/notifications';
 import {
   uploadWorkforceSessionHandler,
@@ -60,6 +67,10 @@ app.post('/api/admin/amazon/liability-summary', liabilitySummaryHandler);
 app.post('/api/admin/executive/driver-reconciliation', driverReconciliationHandler);
 app.post('/api/admin/executive/liability-summary', liabilitySummaryExecutiveHandler);
 app.post('/api/admin/executive/remittance', remittanceHandler);
+app.get('/api/admin/executive/cash-in-associate/network', ciaNetworkHandler);
+app.get('/api/admin/executive/cash-in-associate', ciaStationHandler);
+app.post('/api/admin/executive/cash-in-associate/refresh', ciaRefreshHandler);
+app.post('/api/admin/internal/cia-snapshot/continue', ciaContinueHandler);
 app.get('/api/admin/credentials', getCredentialsHandler);
 app.put('/api/admin/credentials', upsertCredentialsHandler);
 app.get('/api/admin/notifications', listNotificationsHandler);
@@ -76,4 +87,40 @@ app.get('/api/admin/workforce/associates/:transporterId', getWorkforceAssociateH
 
 app.notFound((c) => c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404));
 
-export default app;
+/** Cron that starts the daily Cash In Associate run (08:00 IST). */
+const CIA_DAILY_CRON = '30 2 * * *';
+
+/**
+ * Cash In Associate snapshots:
+ * - 02:30 UTC (08:00 IST): start/resume the daily run + roster sync.
+ * - Every 2 minutes: advance the active run by exactly one station, keeping
+ *   each invocation inside the Workers Free 50-subrequest budget.
+ */
+async function scheduled(
+  event: ScheduledEvent,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<void> {
+  const job =
+    event.cron === CIA_DAILY_CRON
+      ? ciaDailyCron(env).then((run) => {
+          console.log(`CIA daily run ${run.id} status=${run.status}`);
+        })
+      : ciaTickerCron(env).then((tick) => {
+          if (tick.processedStation) {
+            console.log(
+              `CIA tick processed ${tick.processedStation} (done=${tick.done})`,
+            );
+          }
+        });
+  ctx.waitUntil(
+    job.catch((err) => {
+      console.error('CIA scheduled job failed', err);
+    }),
+  );
+}
+
+export default {
+  fetch: app.fetch,
+  scheduled,
+};

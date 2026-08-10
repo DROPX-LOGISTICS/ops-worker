@@ -10,6 +10,12 @@ import type {
 import type { DateRange } from '../utils/dateRange';
 
 /**
+ * Ageing packageStatusMap selector: plain bucket name (values = []) or a
+ * bucket with sub-values, e.g. { status: 'Received', values: ['DS -> Customer'] }.
+ */
+export type AgeingStatusSelector = string | { status: string; values: string[] };
+
+/**
  * Everything the validation pipeline needs from "the station system", kept
  * behind an interface so the upstream can be swapped (a different Amazon
  * API generation, an internal service, a mock for tests, etc.) without
@@ -33,21 +39,31 @@ export interface StationDataProvider {
    * Ageing dashboard drill-down (`/os/getDrillDownData`).
    * Dates are YYYY-MM-DD; uses UTC calendar-day lastUpdatedRange (unix seconds).
    * When `toDate` is omitted, fetches a single calendar day.
+   * Optional `statuses` overrides the default Delivered / Cash At Station /
+   * Cash With Associate set (e.g. CIA pipeline adds Received → DS -> Customer).
    */
   getAgeingDrillDownData(
     stationCode: string,
     fromDate: string,
     auth: AmazonAuthContext,
     toDate?: string,
+    statuses?: AgeingStatusSelector[],
   ): Promise<AgeingPackageDetail[]>;
 
   getStationLiabilitySummary(stationCode: string, range: DateRange, auth: AmazonAuthContext): Promise<LiabilitySummary>;
 
   /**
    * Bank-deposits remittance list. `range` is the business-day filter hint;
-   * the provider fetches a portal lookback ending at max(range end, today).
+   * by default the provider fetches a portal lookback ending at max(range end, today).
+   * Pass `lockPortalEndToRange: true` to end the portal window at the range end
+   * date only (needed for historical multi-chunk CIA coverage).
    */
-  getRemittances(stationCode: string, range: DateRange, auth: AmazonAuthContext): Promise<RemittanceEntry[]>;
+  getRemittances(
+    stationCode: string,
+    range: DateRange,
+    auth: AmazonAuthContext,
+    opts?: { lockPortalEndToRange?: boolean },
+  ): Promise<RemittanceEntry[]>;
 
   /** Shipment-level remittance details for pending trackingId diff. */
   getRemittanceDetailsForExcel(remittanceId: string, auth: AmazonAuthContext): Promise<RemittanceDetails>;

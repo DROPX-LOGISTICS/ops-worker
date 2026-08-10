@@ -1,4 +1,4 @@
-import type { StationDataProvider } from './StationDataProvider';
+import type { StationDataProvider, AgeingStatusSelector } from './StationDataProvider';
 import type {
   Driver,
   DriverReconciliationEntry,
@@ -14,6 +14,7 @@ import {
   getUtcCalendarDayRangeSeconds,
   getUtcCalendarRangeSeconds,
   getRemittancePortalFetchRange,
+  getRemittanceFetchRange,
   todayIstYmd,
   ymdFromIstEpochMs,
 } from '../utils/dateRange';
@@ -306,6 +307,7 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     fromDate: string,
     auth: AmazonAuthContext,
     toDate?: string,
+    statuses?: AgeingStatusSelector[],
   ): Promise<AgeingPackageDetail[]> {
     const { resourcePath, processName, httpMethod } = AMAZON_RESOURCES.getAgeingDrillDownData;
     const lastUpdatedRange = toDate
@@ -324,22 +326,28 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     ];
 
     // Match ageing CSV export: separate call per status (not one combined map).
-    const statuses = ['Delivered', 'Cash At Station', 'Cash With Associate'] as const;
+    const statusList: AgeingStatusSelector[] =
+      statuses && statuses.length > 0
+        ? statuses
+        : ['Delivered', 'Cash At Station', 'Cash With Associate'];
 
     const pages = await Promise.all(
-      statuses.map((status) =>
-        this.fetchAgeingStatusPages(
+      statusList.map((selector) => {
+        const status = typeof selector === 'string' ? selector : selector.status;
+        const values = typeof selector === 'string' ? [] : selector.values;
+        return this.fetchAgeingStatusPages(
           resourcePath,
           processName,
           httpMethod,
           stationCode,
           status,
+          values,
           filters,
           lastUpdatedRange,
           pageSize,
           auth,
-        ),
-      ),
+        );
+      }),
     );
 
     const byTrackingId = new Map<string, AgeingPackageDetail>();
@@ -356,6 +364,7 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     httpMethod: string | undefined,
     stationCode: string,
     status: string,
+    statusValues: string[],
     filters: Array<{ __type: string; filterMap: Record<string, unknown> }>,
     lastUpdatedRange: { startTime: number; endTime: number },
     pageSize: number,
@@ -380,7 +389,7 @@ export class AmazonLogisticsProvider implements StationDataProvider {
         processName,
         {
           nodeId: stationCode,
-          packageStatusMap: { [status]: [] },
+          packageStatusMap: { [status]: statusValues },
           filters,
           lastUpdatedRange,
           size: pageSize,
@@ -413,11 +422,19 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     );
   }
 
-  async getRemittances(stationCode: string, range: DateRange, auth: AmazonAuthContext): Promise<RemittanceEntry[]> {
+  async getRemittances(
+    stationCode: string,
+    range: DateRange,
+    auth: AmazonAuthContext,
+    opts?: { lockPortalEndToRange?: boolean },
+  ): Promise<RemittanceEntry[]> {
     const { resourcePath, processName } = AMAZON_RESOURCES.getRemittance;
-    // End at max(request day, today) so next-day deposits stay visible.
     const anchorYmd = ymdFromIstEpochMs(range.endTime);
-    const fetchRange = getRemittancePortalFetchRange(anchorYmd, todayIstYmd());
+    // Default: end at max(request, today) so next-day deposits stay visible.
+    // CIA historical chunks lock the portal end to the chunk anchor only.
+    const fetchRange = opts?.lockPortalEndToRange
+      ? getRemittanceFetchRange(anchorYmd)
+      : getRemittancePortalFetchRange(anchorYmd, todayIstYmd());
     const data = await this.callProxy<{ stationCode: string; dateRange: DateRange }, RemittanceResponse>(
       resourcePath,
       processName,

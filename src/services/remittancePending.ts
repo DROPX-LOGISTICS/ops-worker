@@ -70,10 +70,11 @@ export interface RemittanceLedgerResult {
  * Build trackingId → remittance clearance day from getRemittanceDetailsForExcel.
  * Exact trackingId only — first remittance win if duplicated.
  */
-async function buildClearedTrackingMap(
+export async function buildClearedTrackingMap(
   remittances: RemittanceEntry[],
   provider: StationDataProvider,
   auth: AmazonAuthContext,
+  concurrency = 8,
 ): Promise<Map<string, ClearedTracking>> {
   const map = new Map<string, ClearedTracking>();
   const unique = [
@@ -84,12 +85,17 @@ async function buildClearedTrackingMap(
     ).values(),
   ];
 
-  const detailsList = await Promise.all(
-    unique.map(async (r) => {
-      const details = await provider.getRemittanceDetailsForExcel(r.remittanceId, auth);
-      return { remittance: r, details };
-    }),
-  );
+  const detailsList: Array<{ remittance: RemittanceEntry; details: Awaited<ReturnType<StationDataProvider['getRemittanceDetailsForExcel']>> }> = [];
+  for (let i = 0; i < unique.length; i += concurrency) {
+    const chunk = unique.slice(i, i + concurrency);
+    const batch = await Promise.all(
+      chunk.map(async (r) => {
+        const details = await provider.getRemittanceDetailsForExcel(r.remittanceId, auth);
+        return { remittance: r, details };
+      }),
+    );
+    detailsList.push(...batch);
+  }
 
   for (const { remittance, details } of detailsList) {
     const clearedOnDate = ymdFromIstEpochMs(remittance.creationDate);
@@ -186,7 +192,7 @@ function resolveWindow(args: {
   return { fromDate, toDate, mode, limitedByRemittanceWindow, windowRemittances };
 }
 
-function buildLedgerDays(args: {
+export function buildLedgerDays(args: {
   fromDate: string;
   toDate: string;
   drivers: Driver[];

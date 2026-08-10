@@ -135,10 +135,25 @@ export async function loadWorkforceRosterMap(
   const provider = createWorkforceProvider(env);
   const sessionStore = createWorkforceSessionStore(env);
   try {
-    const associates = await provider.fetchDSPAssociates(ensured.auth);
+    // ACTIVE+INACTIVE and OFFBOARDED are separate portal tabs / query params.
+    const [activeInactive, offboarded] = await Promise.all([
+      provider.fetchDSPAssociates(ensured.auth, {
+        operationalStatuses: 'ACTIVE,INACTIVE',
+      }),
+      provider.fetchDSPAssociates(ensured.auth, {
+        operationalStatuses: 'OFFBOARDED',
+      }),
+    ]);
+
+    const byId = new Map<string, WorkforceAssociate>();
+    for (const a of [...activeInactive, ...offboarded]) {
+      byId.set(a.transporterId, a);
+    }
+    const associates = [...byId.values()];
+
     await associateStore.upsertMany(associates);
     return {
-      byTransporterId: new Map(associates.map((a) => [a.transporterId, a])),
+      byTransporterId: byId,
       source: 'live',
       syncedAt: new Date().toISOString(),
       count: associates.length,
