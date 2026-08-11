@@ -37,7 +37,8 @@ export interface StationDataProvider {
 
   /**
    * Ageing dashboard drill-down (`/os/getDrillDownData`).
-   * Dates are YYYY-MM-DD; uses UTC calendar-day lastUpdatedRange (unix seconds).
+   * Dates are YYYY-MM-DD (IST calendar). The upstream fetch is UTC-padded;
+   * rows are kept only when lastUpdatedTime falls inside [fromDate, toDate].
    * When `toDate` is omitted, fetches a single calendar day.
    * Optional `statuses` overrides the default Delivered / Cash At Station /
    * Cash With Associate set (e.g. CIA pipeline adds Received → DS -> Customer).

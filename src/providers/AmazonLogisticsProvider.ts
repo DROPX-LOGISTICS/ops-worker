@@ -11,8 +11,8 @@ import type {
 } from '../types';
 import type { DateRange } from '../utils/dateRange';
 import {
-  getIstCalendarDayRangeSeconds,
-  getIstCalendarRangeSeconds,
+  addDaysYmd,
+  getUtcCalendarRangeSeconds,
   getRemittancePortalFetchRange,
   getRemittanceFetchRange,
   todayIstYmd,
@@ -321,9 +321,13 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     statuses?: AgeingStatusSelector[],
   ): Promise<AgeingPackageDetail[]> {
     const { resourcePath, processName, httpMethod } = AMAZON_RESOURCES.getAgeingDrillDownData;
-    const lastUpdatedRange = toDate
-      ? getIstCalendarRangeSeconds(fromDate, toDate)
-      : getIstCalendarDayRangeSeconds(fromDate);
+    const endYmd = toDate ?? fromDate;
+    // Amazon's lastUpdatedRange is UTC-midnight oriented; pad ±1 calendar day so
+    // IST early-morning / late-evening rows are not clipped by the API, then
+    // keep only rows whose lastUpdatedTime date falls in [fromDate, endYmd].
+    const fetchFrom = addDaysYmd(fromDate, -1);
+    const fetchTo = addDaysYmd(endYmd, 1);
+    const lastUpdatedRange = getUtcCalendarRangeSeconds(fetchFrom, fetchTo);
     const pageSize = 10000;
     const filters = [
       {
@@ -363,9 +367,7 @@ export class AmazonLogisticsProvider implements StationDataProvider {
 
     const requestedCode = stationCode.trim().toUpperCase();
     const today = todayIstYmd();
-    // CIA / historical ranges end at yesterday — drop any row Amazon still
-    // tags with today's lastUpdatedTime. Same-day requests (end === today) keep them.
-    const endYmd = toDate ?? fromDate;
+    // Historical ranges end at yesterday — never keep today's lastUpdatedTime.
     const excludeTodayUpdates = endYmd < today;
     const byTrackingId = new Map<string, AgeingPackageDetail>();
     for (const row of pages.flat()) {
@@ -377,9 +379,15 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       if (rowStation && rowStation !== requestedCode && ALLOWED_STATIONS.has(rowStation)) {
         continue;
       }
-      if (excludeTodayUpdates && ageingUpdatedYmd(row.lastUpdatedTime) === today) {
-        continue;
+
+      const updatedYmd = ageingUpdatedYmd(row.lastUpdatedTime);
+      if (updatedYmd) {
+        if (updatedYmd < fromDate || updatedYmd > endYmd) continue;
+        if (excludeTodayUpdates && updatedYmd === today) continue;
+      } else if (excludeTodayUpdates) {
+        // No parseable date — keep only when not in a historical (excl. today) query.
       }
+
       if (!row.trackingId || byTrackingId.has(row.trackingId)) continue;
       byTrackingId.set(row.trackingId, row);
     }
