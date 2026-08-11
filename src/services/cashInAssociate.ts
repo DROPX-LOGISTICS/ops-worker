@@ -41,11 +41,17 @@ import {
 export const CIA_AGEING_STATUSES: AgeingStatusSelector[] = [
   'Cash With Associate',
   'Cash At Station',
+  'Delivered',
   { status: 'Received', values: ['DS -> Customer'] },
 ];
 
 function isCashMethod(method: string | null | undefined): boolean {
   return (method ?? '').trim().toUpperCase() === 'CASH';
+}
+
+/** Prefer actualPaymentMethod; fall back to paymentMethod (Excel export uses both). */
+function isCashPackage(pkg: AgeingPackageDetail): boolean {
+  return isCashMethod(pkg.actualPaymentMethod) || isCashMethod(pkg.paymentMethod);
 }
 
 /** Ageing money fields are often in paise. */
@@ -105,7 +111,7 @@ export function filterCashInAssociatePackages(
   packages: AgeingPackageDetail[],
 ): AgeingPackageDetail[] {
   return packages.filter(
-    (p) => isCashMethod(p.actualPaymentMethod) && classifyReconState(p.state) === 'pending',
+    (p) => isCashPackage(p) && classifyReconState(p.state) === 'pending',
   );
 }
 
@@ -114,19 +120,18 @@ export function filterCashAtStationPackages(
   packages: AgeingPackageDetail[],
 ): AgeingPackageDetail[] {
   return packages.filter(
-    (p) => isCashMethod(p.actualPaymentMethod) && classifyReconState(p.state) === 'completed',
+    (p) => isCashPackage(p) && classifyReconState(p.state) === 'completed',
   );
 }
 
-/** CASH + (Cash In Associate OR Cash At Station). */
+/**
+ * All CASH packages in the ageing pull for the date range (matches ageing Excel
+ * export grand total — includes Delivered CASH rows, not only CIA / CAS).
+ */
 export function filterAgeingCashPackages(
   packages: AgeingPackageDetail[],
 ): AgeingPackageDetail[] {
-  return packages.filter((p) => {
-    if (!isCashMethod(p.actualPaymentMethod)) return false;
-    const kind = classifyReconState(p.state);
-    return kind === 'pending' || kind === 'completed';
-  });
+  return packages.filter((p) => isCashPackage(p));
 }
 
 function emptySummary(
@@ -262,10 +267,11 @@ async function fetchRemittancesAtAnchor(
  * Reconcile Cash In Associate ageing for a station over the analysis window.
  * Remittances: multiple ~15-day portal fetches to cover the window + prior deposits.
  *
- * Gap alignment: if the day before fromDate has no deposit, shift ageing + deposit
- * comparison to start at the last prior deposit date so held cash and deposits
- * share the same cycle (avoids false negatives like deposits >> open ageing).
- * difference = ageingTotal - depositedTotal on the aligned window.
+ * Gap alignment (when enabled): if the day before fromDate has no deposit, shift
+ * ageing + deposit comparison to the last prior deposit date so held cash and
+ * deposits share the same cycle. Disable for explicit live date-range checks
+ * that must match an Excel export window exactly.
+ * difference = ageingTotal - depositedTotal on the (aligned) window.
  */
 export async function reconcileCashInAssociate(args: {
   stationCode: string;
@@ -275,6 +281,8 @@ export async function reconcileCashInAssociate(args: {
   provider: StationDataProvider;
   auth: AmazonAuthContext;
   workforceByTransporterId?: Map<string, WorkforceAssociate>;
+  /** Default true. Set false for live fromDate/toDate Excel-style checks. */
+  alignDepositCycle?: boolean;
 }): Promise<CiaStationPayload> {
   const {
     stationCode,
@@ -284,6 +292,7 @@ export async function reconcileCashInAssociate(args: {
     provider,
     auth,
     workforceByTransporterId,
+    alignDepositCycle = true,
   } = args;
 
   // Fetch remittances first (including a lookback before fromDate) so we can
@@ -302,7 +311,9 @@ export async function reconcileCashInAssociate(args: {
     return s === 'CREATED' || s === 'SUBMITTED';
   });
 
-  const alignedFrom = resolveAlignedFromDate(fromDate, active, startHourIst);
+  const alignedFrom = alignDepositCycle
+    ? resolveAlignedFromDate(fromDate, active, startHourIst)
+    : fromDate;
 
   const packagesRaw = await provider.getAgeingDrillDownData(
     stationCode,

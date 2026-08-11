@@ -350,8 +350,8 @@ export interface CiaStationSummary {
   /** Cash At Station only (CASH + completed state) from ageing — INR. */
   cashAtStationTotal: number;
   /**
-   * All ageing CASH with state Cash In Associate OR Cash At Station.
-   * = ciaTotal + cashAtStationTotal.
+   * All ageing CASH in the window (CIA + Cash At Station + any other CASH
+   * states returned for the range, e.g. Delivered). Matches ageing Excel totals.
    */
   ageingTotal: number;
   /** Bank-deposit remittance cash in the same calendar window (triple ~15-day fetches). */

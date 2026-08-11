@@ -122,6 +122,8 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
           provider,
           auth: ensured.auth,
           workforceByTransporterId: workforce.byTransporterId,
+          // Exact UI range — do not shift to last deposit (must match Excel window).
+          alignDepositCycle: false,
         });
 
         return {

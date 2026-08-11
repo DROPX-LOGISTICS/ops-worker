@@ -112,13 +112,23 @@ function parseAmount(value: string | number | null | undefined): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-/** YYYY-MM-DD from ageing lastUpdatedTime (supports `2026-08-11` or `2026-08-11 14:30:00`). */
+/** YYYY-MM-DD for ageing lastUpdatedTime, using IST for timezone-aware values. */
 function ageingUpdatedYmd(lastUpdatedTime: string | null | undefined): string | null {
   if (!lastUpdatedTime) return null;
-  const m = /^(\d{4}-\d{2}-\d{2})/.exec(lastUpdatedTime.trim());
-  if (m) return m[1]!;
-  const part = lastUpdatedTime.trim().split(/[\sT]/)[0];
-  return part && /^\d{4}-\d{2}-\d{2}$/.test(part) ? part : null;
+  const trimmed = lastUpdatedTime.trim();
+  // Export / portal style without zone: `2026-08-04 00:59:52` — already IST wall clock.
+  const hasZone = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(trimmed) || /T.*[zZ]|T.*[+-]\d{2}/.test(trimmed);
+  if (!hasZone) {
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(trimmed);
+    if (m) return m[1]!;
+    const part = trimmed.split(/[\sT]/)[0];
+    return part && /^\d{4}-\d{2}-\d{2}$/.test(part) ? part : null;
+  }
+  // ISO with timezone — convert instant to IST calendar date.
+  const ms = Date.parse(trimmed);
+  if (Number.isFinite(ms)) return todayIstYmd(ms);
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(trimmed);
+  return m ? m[1]! : null;
 }
 
 function normaliseAgeingPackage(row: RawAgeingPackage): AgeingPackageDetail {
@@ -322,11 +332,10 @@ export class AmazonLogisticsProvider implements StationDataProvider {
   ): Promise<AgeingPackageDetail[]> {
     const { resourcePath, processName, httpMethod } = AMAZON_RESOURCES.getAgeingDrillDownData;
     const endYmd = toDate ?? fromDate;
-    // Amazon's lastUpdatedRange is UTC-midnight oriented; pad ±1 calendar day so
-    // IST early-morning / late-evening rows are not clipped by the API, then
-    // keep only rows whose lastUpdatedTime date falls in [fromDate, endYmd].
-    const fetchFrom = addDaysYmd(fromDate, -1);
-    const fetchTo = addDaysYmd(endYmd, 1);
+    // Amazon lastUpdatedRange is UTC-oriented; pad ±2 calendar days so IST
+    // edge rows are present, then keep only lastUpdatedTime dates in range.
+    const fetchFrom = addDaysYmd(fromDate, -2);
+    const fetchTo = addDaysYmd(endYmd, 2);
     const lastUpdatedRange = getUtcCalendarRangeSeconds(fetchFrom, fetchTo);
     const pageSize = 10000;
     const filters = [
