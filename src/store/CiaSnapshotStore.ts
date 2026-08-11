@@ -78,6 +78,7 @@ function emptySummary(): CiaStationSummary {
     shipmentCount: 0,
     pendingDriverCount: 0,
     limitedByRemittanceWindow: false,
+    alignedFromDate: '',
   };
 }
 

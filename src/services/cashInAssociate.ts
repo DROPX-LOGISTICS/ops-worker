@@ -24,6 +24,7 @@ import {
   getBusinessDayRange,
   REMITTANCE_LOOKBACK_DAYS,
   todayIstYmd,
+  ymdFromIstEpochMs,
 } from '../utils/dateRange';
 import { classifyReconState } from '../utils/reconState';
 import { round2 } from '../utils/number';
@@ -128,7 +129,10 @@ export function filterAgeingCashPackages(
   });
 }
 
-function emptySummary(limitedByRemittanceWindow = false): CiaStationSummary {
+function emptySummary(
+  limitedByRemittanceWindow = false,
+  alignedFromDate = '',
+): CiaStationSummary {
   return {
     ciaTotal: 0,
     cashAtStationTotal: 0,
@@ -141,7 +145,38 @@ function emptySummary(limitedByRemittanceWindow = false): CiaStationSummary {
     shipmentCount: 0,
     pendingDriverCount: 0,
     limitedByRemittanceWindow,
+    alignedFromDate,
   };
+}
+
+/**
+ * Align gap/ageing start to the deposit cycle.
+ * - If fromDate-1 has a CREATED/SUBMITTED deposit → window starts clean → use fromDate.
+ * - Else use the last deposit date before fromDate (stations that deposit on
+ *   different days than they hold cash). Fall back to fromDate when none found.
+ */
+export function resolveAlignedFromDate(
+  fromDate: string,
+  activeRemittances: RemittanceEntry[],
+  startHourIst: number,
+): string {
+  const dayBefore = addDaysYmd(fromDate, -1);
+  const dayBeforeRange = getBusinessDayRange(dayBefore, startHourIst);
+  const hasDepositDayBefore = activeRemittances.some(
+    (r) =>
+      r.creationDate >= dayBeforeRange.startTime && r.creationDate <= dayBeforeRange.endTime,
+  );
+  if (hasDepositDayBefore) return fromDate;
+
+  const fromStart = getBusinessDayRange(fromDate, startHourIst).startTime;
+  let lastDepositYmd: string | null = null;
+  for (const r of activeRemittances) {
+    if (r.creationDate >= fromStart) continue;
+    const ymd = ymdFromIstEpochMs(r.creationDate);
+    if (!lastDepositYmd || ymd > lastDepositYmd) lastDepositYmd = ymd;
+  }
+  // Ageing + gap start on the deposit day itself (user: "from that day to toDate").
+  return lastDepositYmd ?? fromDate;
 }
 
 function buildPendingDrivers(
@@ -224,9 +259,13 @@ async function fetchRemittancesAtAnchor(
 }
 
 /**
- * Reconcile Cash In Associate ageing for a station over the 31-day prior window.
- * Remittances: three ~15-day portal fetches to cover the full window + prior deposits.
- * difference = ageingTotal - depositedTotal.
+ * Reconcile Cash In Associate ageing for a station over the analysis window.
+ * Remittances: multiple ~15-day portal fetches to cover the window + prior deposits.
+ *
+ * Gap alignment: if the day before fromDate has no deposit, shift ageing + deposit
+ * comparison to start at the last prior deposit date so held cash and deposits
+ * share the same cycle (avoids false negatives like deposits >> open ageing).
+ * difference = ageingTotal - depositedTotal on the aligned window.
  */
 export async function reconcileCashInAssociate(args: {
   stationCode: string;
@@ -247,20 +286,10 @@ export async function reconcileCashInAssociate(args: {
     workforceByTransporterId,
   } = args;
 
-  const packagesRaw = await provider.getAgeingDrillDownData(
-    stationCode,
-    fromDate,
-    auth,
-    toDate,
-    CIA_AGEING_STATUSES,
-  );
-  const ciaPackages = filterCashInAssociatePackages(packagesRaw);
-  const cashAtStationPackages = filterCashAtStationPackages(packagesRaw);
-  const ageingCashPackages = filterAgeingCashPackages(packagesRaw);
-
-  const remittanceAnchors = getCiaRemittanceAnchors(fromDate, toDate);
-
-  // Three (~15-day) portal fetches in parallel — anchors dedupe when they collapse.
+  // Fetch remittances first (including a lookback before fromDate) so we can
+  // align the ageing window to the last deposit cycle when needed.
+  const remittanceLookupFrom = addDaysYmd(fromDate, -(REMITTANCE_LOOKBACK_DAYS - 1));
+  const remittanceAnchors = getCiaRemittanceAnchors(remittanceLookupFrom, toDate);
   const remittanceBatches = await Promise.all(
     remittanceAnchors.map((anchor) =>
       fetchRemittancesAtAnchor(provider, stationCode, anchor, startHourIst, auth),
@@ -273,7 +302,20 @@ export async function reconcileCashInAssociate(args: {
     return s === 'CREATED' || s === 'SUBMITTED';
   });
 
-  const windowStart = getBusinessDayRange(fromDate, startHourIst).startTime;
+  const alignedFrom = resolveAlignedFromDate(fromDate, active, startHourIst);
+
+  const packagesRaw = await provider.getAgeingDrillDownData(
+    stationCode,
+    alignedFrom,
+    auth,
+    toDate,
+    CIA_AGEING_STATUSES,
+  );
+  const ciaPackages = filterCashInAssociatePackages(packagesRaw);
+  const cashAtStationPackages = filterCashAtStationPackages(packagesRaw);
+  const ageingCashPackages = filterAgeingCashPackages(packagesRaw);
+
+  const windowStart = getBusinessDayRange(alignedFrom, startHourIst).startTime;
   const windowEnd = getBusinessDayRange(toDate, startHourIst).endTime;
   const windowRemittances = active.filter(
     (r) => r.creationDate >= windowStart && r.creationDate <= windowEnd,
@@ -282,7 +324,7 @@ export async function reconcileCashInAssociate(args: {
   // Earliest portal start ≈ oldestAnchor - 15 days; flag if analysis starts before that.
   const oldestAnchor = remittanceAnchors[remittanceAnchors.length - 1] ?? toDate;
   const portalCoveredFrom = addDaysYmd(oldestAnchor, -(REMITTANCE_LOOKBACK_DAYS - 1));
-  const limitedByRemittanceWindow = fromDate < portalCoveredFrom;
+  const limitedByRemittanceWindow = alignedFrom < portalCoveredFrom;
 
   // Subrequest budget: fetch details for the most recent remittances only.
   // Soft-fail: a single Amazon 500 on details must not fail the whole station.
@@ -299,7 +341,7 @@ export async function reconcileCashInAssociate(args: {
   );
 
   const ledger = buildLedgerDays({
-    fromDate,
+    fromDate: alignedFrom,
     toDate,
     drivers: [],
     packages: ciaPackages,
@@ -333,19 +375,20 @@ export async function reconcileCashInAssociate(args: {
     shipmentCount,
     pendingDriverCount: pendingDrivers.length,
     limitedByRemittanceWindow,
+    alignedFromDate: alignedFrom,
   };
 
   if (ciaPackages.length === 0 && windowRemittances.length === 0) {
     return {
-      window: { from: fromDate, to: toDate },
-      summary: emptySummary(limitedByRemittanceWindow),
+      window: { from: alignedFrom, to: toDate },
+      summary: emptySummary(limitedByRemittanceWindow, alignedFrom),
       ledger,
       pendingDrivers: [],
     };
   }
 
   return {
-    window: { from: fromDate, to: toDate },
+    window: { from: alignedFrom, to: toDate },
     summary,
     ledger,
     pendingDrivers,

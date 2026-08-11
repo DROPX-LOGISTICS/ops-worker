@@ -26,6 +26,7 @@ function sumSummaries(summaries: CiaStationSummary[]): CiaStationSummary {
   );
   const depositedTotal = round2(summaries.reduce((s, x) => s + x.depositedTotal, 0));
   const cashDifference = round2(ageingTotal - depositedTotal);
+  const alignedDates = summaries.map((x) => x.alignedFromDate).filter(Boolean).sort();
   return {
     ciaTotal,
     cashAtStationTotal,
@@ -38,6 +39,7 @@ function sumSummaries(summaries: CiaStationSummary[]): CiaStationSummary {
     shipmentCount: summaries.reduce((s, x) => s + x.shipmentCount, 0),
     pendingDriverCount: summaries.reduce((s, x) => s + x.pendingDriverCount, 0),
     limitedByRemittanceWindow: summaries.some((x) => x.limitedByRemittanceWindow),
+    alignedFromDate: alignedDates[0] ?? '',
   };
 }
 

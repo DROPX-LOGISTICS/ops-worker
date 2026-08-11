@@ -27,6 +27,7 @@ function emptyPayload(fromDate: string, toDate: string): CiaStationPayload {
     shipmentCount: 0,
     pendingDriverCount: 0,
     limitedByRemittanceWindow: false,
+    alignedFromDate: fromDate,
   };
   return { window: { from: fromDate, to: toDate }, summary, ledger: [], pendingDrivers: [] };
 }

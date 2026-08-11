@@ -370,6 +370,12 @@ export interface CiaStationSummary {
   shipmentCount: number;
   pendingDriverCount: number;
   limitedByRemittanceWindow: boolean;
+  /**
+   * Start date used for ageing vs deposit gap.
+   * Equals analysis fromDate when the prior day had a deposit; otherwise the
+   * last deposit date before fromDate (cycle alignment).
+   */
+  alignedFromDate: string;
 }
 
 export interface CiaPendingDriver {
