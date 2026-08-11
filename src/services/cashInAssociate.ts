@@ -20,6 +20,7 @@ import {
 } from '../config';
 import {
   addDaysYmd,
+  daysBetweenYmd,
   getBusinessDayRange,
   REMITTANCE_LOOKBACK_DAYS,
   todayIstYmd,
@@ -69,19 +70,20 @@ export function getCiaAnalysisWindow(nowMs = Date.now()): {
 
 /**
  * Amazon bank-deposits portal only returns ~16 days ending at the selected date.
- * Cover the analysis window with three locked ~15-day anchors (most recent first):
- *   0: end = toDate
- *   1: end = toDate - 15
- *   2: end = toDate - 30
- * so deposits on ageing days and prior carry-over remittances are visible.
+ * Cover the analysis window with locked ~15-day anchors (most recent first),
+ * plus one prior chunk for carry-over deposits. Anchor count scales with the
+ * requested range (e.g. ~3 for 31 days, ~7 for 90 days), capped for budget.
  */
 export function getCiaRemittanceAnchors(fromDate: string, toDate: string): string[] {
   const step = REMITTANCE_LOOKBACK_DAYS - 1; // 15
+  const spanDays = Math.max(1, daysBetweenYmd(fromDate, toDate) + 1);
+  const needed = Math.min(8, Math.max(CIA_REMITTANCE_FETCH_COUNT, Math.ceil(spanDays / step) + 1));
   const anchors: string[] = [];
   let anchor = toDate;
-  for (let i = 0; i < CIA_REMITTANCE_FETCH_COUNT; i++) {
+  for (let i = 0; i < needed; i++) {
     const clamped = anchor < fromDate ? fromDate : anchor;
     if (!anchors.includes(clamped)) anchors.push(clamped);
+    if (clamped <= fromDate && i > 0) break;
     anchor = addDaysYmd(anchor, -step);
   }
   return anchors;

@@ -19,7 +19,7 @@ import {
   ymdFromIstEpochMs,
 } from '../utils/dateRange';
 import { ProviderError } from '../errors';
-import { AMAZON_RESOURCES } from '../config';
+import { ALLOWED_STATIONS, AMAZON_RESOURCES } from '../config';
 import { round2 } from '../utils/number';
 
 interface ProxyEnvelope<TReq> {
@@ -355,10 +355,14 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     const requestedCode = stationCode.trim().toUpperCase();
     const byTrackingId = new Map<string, AgeingPackageDetail>();
     for (const row of pages.flat()) {
-      // Some mother-station ageing exports include sub-station rows. When
-      // Amazon tags a row with its station head/node, keep only the exact
-      // requested station so network/CIA totals do not double-count children.
-      if (row.stationCode && row.stationCode !== requestedCode) continue;
+      // Mother-station ageing can include sub-station rows.
+      // - Same station head → keep
+      // - Sub-station on our allowlist → drop (counted on its own station run)
+      // - Sub-station NOT on our allowlist → keep under the mother (otherwise lost)
+      const rowStation = row.stationCode?.trim().toUpperCase() || null;
+      if (rowStation && rowStation !== requestedCode && ALLOWED_STATIONS.has(rowStation)) {
+        continue;
+      }
       if (!row.trackingId || byTrackingId.has(row.trackingId)) continue;
       byTrackingId.set(row.trackingId, row);
     }
