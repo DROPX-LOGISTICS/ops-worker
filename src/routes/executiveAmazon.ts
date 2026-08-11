@@ -28,6 +28,12 @@ interface StationDateBody {
 interface RemittanceVerifyBody extends StationDateBody {
   remittanceCode?: string;
   amount?: number | string;
+  /** COD period start YYYY-MM-DD (IST) — must cover remittance creationDate */
+  codPeriodFrom?: string;
+  /** COD period end YYYY-MM-DD (IST) — must cover remittance creationDate */
+  codPeriodTo?: string;
+  /** Optional portal submittedBy / createdBy check (case-insensitive) */
+  submittedBy?: string;
 }
 
 async function parseStationDate(
@@ -320,11 +326,18 @@ export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
 }
 
 /**
- * Verify a single remittance code + amount for a station/business day.
+ * Verify remittance for COD Submission.
  *
  * POST /api/admin/executive/remittance/verify
- * Header: x-admin-key
- * { "stationCode": "JDBD", "date": "2026-08-03", "remittanceCode": "AC544759", "amount": 54953.55 }
+ * {
+ *   "stationCode": "GNTI",
+ *   "date": "2026-08-10",          // deposit date = submissionDate IST
+ *   "codPeriodFrom": "2026-08-09",  // must cover creationDate IST
+ *   "codPeriodTo": "2026-08-09",
+ *   "remittanceCode": "AC557750",
+ *   "amount": 43016,
+ *   "submittedBy": "saisrihk"       // optional, case-insensitive
+ * }
  */
 export async function remittanceVerifyHandler(c: Context<{ Bindings: Env }>) {
   let body: RemittanceVerifyBody = {};
@@ -343,6 +356,14 @@ export async function remittanceVerifyHandler(c: Context<{ Bindings: Env }>) {
   }
 
   const date = body.date && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : todayIstYmd();
+  const codPeriodFrom =
+    body.codPeriodFrom && /^\d{4}-\d{2}-\d{2}$/.test(body.codPeriodFrom)
+      ? body.codPeriodFrom
+      : date;
+  const codPeriodTo =
+    body.codPeriodTo && /^\d{4}-\d{2}-\d{2}$/.test(body.codPeriodTo)
+      ? body.codPeriodTo
+      : codPeriodFrom;
   const range = getBusinessDayRange(date, Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '0'));
   const fresh =
     body.fresh === true || (c.req.query('fresh') ?? '').trim() === '1';
@@ -361,7 +382,8 @@ export async function remittanceVerifyHandler(c: Context<{ Bindings: Env }>) {
     throw new ValidationInputError('amount must be a non-negative number');
   }
 
-  const cacheKey = `exec:remittance-verify:${stationCode}:${date}:${remittanceCode.toUpperCase()}:${round2(amount)}`;
+  const submittedBy = String(body.submittedBy ?? '').trim() || null;
+  const cacheKey = `exec:remittance-verify:${stationCode}:${date}:${codPeriodFrom}:${codPeriodTo}:${remittanceCode.toUpperCase()}:${round2(amount)}:${(submittedBy ?? '').toLowerCase()}`;
 
   return respondCached(c, cacheKey, fresh, async () => {
     const session = await requireAmazonSessionOrThrow(
@@ -371,16 +393,33 @@ export async function remittanceVerifyHandler(c: Context<{ Bindings: Env }>) {
     );
 
     const provider = createStationDataProvider(c.env);
-    const all = await provider.getRemittances(stationCode, range, session.auth);
-    const result = verifyRemittanceEntry(all, range, remittanceCode, amount, date);
+    // Anchor fetch on the earlier of deposit/COD-from so prior-day creations are included.
+    const fetchAnchor = codPeriodFrom < date ? codPeriodFrom : date;
+    const fetchRange = getBusinessDayRange(
+      fetchAnchor,
+      Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '0'),
+    );
+    const all = await provider.getRemittances(stationCode, fetchRange, session.auth);
+    const result = verifyRemittanceEntry(
+      all,
+      remittanceCode,
+      amount,
+      date,
+      codPeriodFrom,
+      codPeriodTo,
+      submittedBy,
+    );
 
     return {
       status: 'ok',
       stationCode,
       date,
+      codPeriodFrom,
+      codPeriodTo,
       dateRange: range,
       remittanceCode: remittanceCode.trim().toUpperCase(),
       amount: round2(amount),
+      submittedBy,
       sessionSource: session.sessionSource,
       accountKey: session.accountKey,
       ...result,

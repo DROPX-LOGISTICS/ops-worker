@@ -1,6 +1,5 @@
 import { REMITTANCE_CASH_TOLERANCE } from '../config';
 import type { RemittanceEntry } from '../types';
-import type { DateRange } from '../utils/dateRange';
 import { ymdFromIstEpochMs } from '../utils/dateRange';
 import { approxEqual, round2 } from '../utils/number';
 
@@ -12,34 +11,46 @@ export type RemittanceVerifyMatch = {
   status: string;
   actualAmount: number;
   creationDate: number;
+  creationDateIst: string;
   submissionDate: number | null;
-  matchedOn: 'creation_date' | 'submission_date' | 'lookback';
+  submissionDateIst: string | null;
+  submittedBy: string | null;
+  createdBy: string | null;
 };
 
 export type RemittanceVerifyResult = {
   verified: boolean;
   codeFound: boolean;
   amountMatched: boolean;
+  depositDateMatched: boolean;
+  creationPeriodMatched: boolean;
+  submitterMatched: boolean;
   matches: RemittanceVerifyMatch[];
   nearMisses: RemittanceVerifyMatch[];
+  failureReason: string | null;
 };
 
 function normalizeCode(code: string) {
   return code.trim().toUpperCase();
 }
 
-function toMatch(
-  entry: RemittanceEntry,
-  matchedOn: RemittanceVerifyMatch['matchedOn'],
-): RemittanceVerifyMatch {
+function normalizePerson(value: string | null | undefined) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function toMatch(entry: RemittanceEntry): RemittanceVerifyMatch {
+  const submissionDate = entry.submissionDate;
   return {
     remittanceId: entry.remittanceId,
     remittanceCode: entry.remittanceCode,
     status: entry.status,
     actualAmount: round2(entry.actualAmount?.value ?? 0),
     creationDate: entry.creationDate,
-    submissionDate: entry.submissionDate,
-    matchedOn,
+    creationDateIst: ymdFromIstEpochMs(entry.creationDate),
+    submissionDate,
+    submissionDateIst: submissionDate == null ? null : ymdFromIstEpochMs(submissionDate),
+    submittedBy: entry.submittedBy ?? null,
+    createdBy: entry.createdBy ?? null,
   };
 }
 
@@ -48,71 +59,117 @@ function amountOk(entry: RemittanceEntry, amount: number) {
 }
 
 /**
- * Verify remittance code + amount.
- * 1) Same business day by creationDate
- * 2) Same business day by submissionDate
- * 3) Lookback across the portal remittance list (same source as ER remittance API)
+ * COD Submission verify rules (IST dates):
+ * - remittanceCode must match
+ * - depositDate must equal submissionDate (IST day)
+ * - creationDate (IST) must fall within COD From..COD To
+ * - amount must match actualAmount.value (± ₹1)
+ * - submittedBy (optional) compared case-insensitively
  */
 export function verifyRemittanceEntry(
   remittances: RemittanceEntry[],
-  range: DateRange,
   remittanceCode: string,
   amount: number,
   depositYmd: string,
+  codFromYmd: string,
+  codToYmd: string,
+  submittedBy?: string | null,
 ): RemittanceVerifyResult {
   const codeNorm = normalizeCode(remittanceCode);
+  const empty: RemittanceVerifyResult = {
+    verified: false,
+    codeFound: false,
+    amountMatched: false,
+    depositDateMatched: false,
+    creationPeriodMatched: false,
+    submitterMatched: true,
+    matches: [],
+    nearMisses: [],
+    failureReason: null,
+  };
+
   if (!codeNorm) {
-    return { verified: false, codeFound: false, amountMatched: false, matches: [], nearMisses: [] };
+    return { ...empty, failureReason: 'Remittance code is required.' };
   }
 
   const active = remittances.filter((r) => ACTIVE_STATUSES.has(r.status));
   const byCode = active.filter((r) => normalizeCode(r.remittanceCode ?? '') === codeNorm);
-
-  const onCreationDay = byCode.filter(
-    (r) => r.creationDate >= range.startTime && r.creationDate <= range.endTime,
-  );
-  const creationHits = onCreationDay.filter((r) => amountOk(r, amount));
-  if (creationHits.length) {
+  if (!byCode.length) {
     return {
-      verified: true,
-      codeFound: true,
-      amountMatched: true,
-      matches: creationHits.map((r) => toMatch(r, 'creation_date')),
-      nearMisses: onCreationDay.filter((r) => !amountOk(r, amount)).map((r) => toMatch(r, 'creation_date')),
+      ...empty,
+      failureReason: `Remittance code ${codeNorm} was not found on Amazon portal.`,
     };
   }
 
-  const onSubmissionDay = byCode.filter((r) => {
-    if (r.submissionDate == null) return false;
-    return ymdFromIstEpochMs(r.submissionDate) === depositYmd;
+  const nearMisses = byCode.map(toMatch);
+  const wantSubmitter = normalizePerson(submittedBy);
+
+  const fullyMatched = byCode.filter((entry) => {
+    const creationIst = ymdFromIstEpochMs(entry.creationDate);
+    const submissionIst = entry.submissionDate == null ? null : ymdFromIstEpochMs(entry.submissionDate);
+    const depositOk = submissionIst === depositYmd;
+    const periodOk = Boolean(creationIst && creationIst >= codFromYmd && creationIst <= codToYmd);
+    const amountHit = amountOk(entry, amount);
+    const submitterOk =
+      !wantSubmitter ||
+      normalizePerson(entry.submittedBy) === wantSubmitter ||
+      normalizePerson(entry.createdBy) === wantSubmitter;
+    return depositOk && periodOk && amountHit && submitterOk;
   });
-  const submissionHits = onSubmissionDay.filter((r) => amountOk(r, amount));
-  if (submissionHits.length) {
+
+  if (fullyMatched.length) {
     return {
       verified: true,
       codeFound: true,
       amountMatched: true,
-      matches: submissionHits.map((r) => toMatch(r, 'submission_date')),
-      nearMisses: onSubmissionDay.filter((r) => !amountOk(r, amount)).map((r) => toMatch(r, 'submission_date')),
+      depositDateMatched: true,
+      creationPeriodMatched: true,
+      submitterMatched: true,
+      matches: fullyMatched.map(toMatch),
+      nearMisses: [],
+      failureReason: null,
     };
   }
 
-  const lookbackHits = byCode.filter((r) => amountOk(r, amount));
-  if (lookbackHits.length) {
-    return {
-      verified: true,
-      codeFound: true,
-      amountMatched: true,
-      matches: lookbackHits.map((r) => toMatch(r, 'lookback')),
-      nearMisses: byCode.filter((r) => !amountOk(r, amount)).map((r) => toMatch(r, 'lookback')),
-    };
+  // Build a precise reason from the closest candidate (prefer submission-date match).
+  const byDeposit = byCode.filter((entry) => {
+    if (entry.submissionDate == null) return false;
+    return ymdFromIstEpochMs(entry.submissionDate) === depositYmd;
+  });
+  const candidate = byDeposit[0] ?? byCode[0];
+  const creationIst = ymdFromIstEpochMs(candidate.creationDate);
+  const submissionIst =
+    candidate.submissionDate == null ? null : ymdFromIstEpochMs(candidate.submissionDate);
+  const depositDateMatched = submissionIst === depositYmd;
+  const creationPeriodMatched = Boolean(
+    creationIst && creationIst >= codFromYmd && creationIst <= codToYmd,
+  );
+  const amountMatched = amountOk(candidate, amount);
+  const submitterMatched =
+    !wantSubmitter ||
+    normalizePerson(candidate.submittedBy) === wantSubmitter ||
+    normalizePerson(candidate.createdBy) === wantSubmitter;
+
+  let failureReason = `Remittance code ${codeNorm} found but details do not match.`;
+  if (!depositDateMatched) {
+    failureReason = `Deposit date ${depositYmd} must match remittance submission date (portal: ${submissionIst ?? 'missing'}).`;
+  } else if (!creationPeriodMatched) {
+    failureReason = `COD period ${codFromYmd} → ${codToYmd} must cover remittance creation date (portal: ${creationIst}).`;
+  } else if (!amountMatched) {
+    failureReason = `Amount does not match portal actualAmount (portal: ${round2(candidate.actualAmount?.value ?? 0)}, entered: ${round2(amount)}).`;
+  } else if (!submitterMatched) {
+    failureReason = `Submitted by does not match portal submittedBy (portal: ${candidate.submittedBy ?? candidate.createdBy ?? '—'}).`;
   }
 
   return {
     verified: false,
-    codeFound: byCode.length > 0,
-    amountMatched: false,
+    codeFound: true,
+    amountMatched,
+    depositDateMatched,
+    creationPeriodMatched,
+    submitterMatched,
     matches: [],
-    nearMisses: byCode.map((r) => toMatch(r, 'lookback')),
+    nearMisses,
+    failureReason,
   };
 }
