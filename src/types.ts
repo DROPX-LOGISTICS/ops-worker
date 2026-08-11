@@ -148,6 +148,9 @@ export interface AgeingPackageDetail {
   packageType: string | null;
   lastUpdatedTime: string | null;
   orderingOrderId: string | null;
+  /** Station head / node Amazon tagged this ageing row with. */
+  stationCode: string | null;
+  dspName: string | null;
 }
 
 /** Frontend shipment row inside expectedCash (legacy shape). */

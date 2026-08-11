@@ -129,6 +129,8 @@ function normaliseAgeingPackage(row: RawAgeingPackage): AgeingPackageDetail {
     packageType: row.packageType ?? null,
     lastUpdatedTime: row.lastUpdatedTime ?? null,
     orderingOrderId: row.orderingOrderId ?? null,
+    stationCode: row.stationCode ? String(row.stationCode).trim().toUpperCase() : null,
+    dspName: row.dspName ?? null,
   };
 }
 
@@ -350,8 +352,13 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       }),
     );
 
+    const requestedCode = stationCode.trim().toUpperCase();
     const byTrackingId = new Map<string, AgeingPackageDetail>();
     for (const row of pages.flat()) {
+      // Some mother-station ageing exports include sub-station rows. When
+      // Amazon tags a row with its station head/node, keep only the exact
+      // requested station so network/CIA totals do not double-count children.
+      if (row.stationCode && row.stationCode !== requestedCode) continue;
       if (!row.trackingId || byTrackingId.has(row.trackingId)) continue;
       byTrackingId.set(row.trackingId, row);
     }
