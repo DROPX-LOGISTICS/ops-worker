@@ -283,6 +283,12 @@ export async function reconcileCashInAssociate(args: {
   workforceByTransporterId?: Map<string, WorkforceAssociate>;
   /** Default true. Set false for live fromDate/toDate Excel-style checks. */
   alignDepositCycle?: boolean;
+  /**
+   * Fetch getRemittanceDetailsForExcel for cleared-in-window tracking.
+   * Default true for nightly snapshots. Disable for interactive live/range
+   * calls — those details are the main CF Worker subrequest/CPU blow-up.
+   */
+  includeRemittanceDetails?: boolean;
 }): Promise<CiaStationPayload> {
   const {
     stationCode,
@@ -293,6 +299,7 @@ export async function reconcileCashInAssociate(args: {
     auth,
     workforceByTransporterId,
     alignDepositCycle = true,
+    includeRemittanceDetails = true,
   } = args;
 
   // Fetch remittances first (including a lookback before fromDate) so we can
@@ -339,17 +346,21 @@ export async function reconcileCashInAssociate(args: {
 
   // Subrequest budget: fetch details for the most recent remittances only.
   // Soft-fail: a single Amazon 500 on details must not fail the whole station.
-  const detailsRemittances = [...windowRemittances]
-    .sort((a, b) => b.creationDate - a.creationDate)
-    .slice(0, CIA_REMITTANCE_DETAILS_MAX);
+  // Live/range UI skips this — ageing totals + deposit sums still match Excel.
+  let clearedByTracking: Awaited<ReturnType<typeof buildClearedTrackingMap>> = new Map();
+  if (includeRemittanceDetails) {
+    const detailsRemittances = [...windowRemittances]
+      .sort((a, b) => b.creationDate - a.creationDate)
+      .slice(0, CIA_REMITTANCE_DETAILS_MAX);
 
-  const clearedByTracking = await buildClearedTrackingMap(
-    detailsRemittances,
-    provider,
-    auth,
-    CIA_REMITTANCE_DETAILS_CONCURRENCY,
-    { softFail: true },
-  );
+    clearedByTracking = await buildClearedTrackingMap(
+      detailsRemittances,
+      provider,
+      auth,
+      CIA_REMITTANCE_DETAILS_CONCURRENCY,
+      { softFail: true },
+    );
+  }
 
   const ledger = buildLedgerDays({
     fromDate: alignedFrom,

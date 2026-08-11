@@ -46,6 +46,7 @@ async function fetchStationOnce(
   fromDate: string,
   toDate: string,
   workforceByTransporterId: Awaited<ReturnType<typeof loadWorkforceRosterMap>>['byTransporterId'],
+  options?: { includeRemittanceDetails?: boolean },
 ): Promise<{ payload: CiaStationPayload; accountKey: string }> {
   const accountKey = portalAccountKeyForStation(stationCode);
   const session = await ensureValidAmazonSession(env, {
@@ -67,6 +68,7 @@ async function fetchStationOnce(
     provider,
     auth: session.auth,
     workforceByTransporterId,
+    includeRemittanceDetails: options?.includeRemittanceDetails ?? true,
   });
   return { payload, accountKey };
 }
@@ -77,6 +79,7 @@ async function fetchStationWithRetry(
   fromDate: string,
   toDate: string,
   workforceByTransporterId: Awaited<ReturnType<typeof loadWorkforceRosterMap>>['byTransporterId'],
+  options?: { includeRemittanceDetails?: boolean },
 ): Promise<{ ok: true; payload: CiaStationPayload; accountKey: string } | { ok: false; error: string; accountKey: string }> {
   const accountKey = portalAccountKeyForStation(stationCode);
   let lastError = 'unknown';
@@ -88,6 +91,7 @@ async function fetchStationWithRetry(
         fromDate,
         toDate,
         workforceByTransporterId,
+        options,
       );
       return { ok: true, ...result };
     } catch (err) {
@@ -299,12 +303,15 @@ export async function refreshCiaStation(
   }
 
   const roster = await loadWorkforceRosterMap(env);
+  // Interactive single-station refresh skips remittance details to stay under
+  // Cloudflare Worker limits (Error 1102). Nightly ticker ticks still fetch them.
   const result = await fetchStationWithRetry(
     env,
     code,
     run.windowFrom,
     run.windowTo,
     roster.byTransporterId,
+    { includeRemittanceDetails: false },
   );
 
   if (result.ok) {

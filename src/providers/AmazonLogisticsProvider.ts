@@ -350,16 +350,19 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     ];
 
     // Match ageing CSV export: separate call per status (not one combined map).
+    // Sequential (not Promise.all) — keeps peak memory/CPU under CF Worker limits
+    // when large stations return multi-thousand-row payloads per status.
     const statusList: AgeingStatusSelector[] =
       statuses && statuses.length > 0
         ? statuses
         : ['Delivered', 'Cash At Station', 'Cash With Associate'];
 
-    const pages = await Promise.all(
-      statusList.map((selector) => {
-        const status = typeof selector === 'string' ? selector : selector.status;
-        const values = typeof selector === 'string' ? [] : selector.values;
-        return this.fetchAgeingStatusPages(
+    const pages: AgeingPackageDetail[][] = [];
+    for (const selector of statusList) {
+      const status = typeof selector === 'string' ? selector : selector.status;
+      const values = typeof selector === 'string' ? [] : selector.values;
+      pages.push(
+        await this.fetchAgeingStatusPages(
           resourcePath,
           processName,
           httpMethod,
@@ -370,9 +373,9 @@ export class AmazonLogisticsProvider implements StationDataProvider {
           lastUpdatedRange,
           pageSize,
           auth,
-        );
-      }),
-    );
+        ),
+      );
+    }
 
     const requestedCode = stationCode.trim().toUpperCase();
     const today = todayIstYmd();

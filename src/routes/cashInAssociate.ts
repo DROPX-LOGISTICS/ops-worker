@@ -124,6 +124,8 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
           workforceByTransporterId: workforce.byTransporterId,
           // Exact UI range — do not shift to last deposit (must match Excel window).
           alignDepositCycle: false,
+          // Skip remittance line-item details on interactive live range (CF 1102).
+          includeRemittanceDetails: false,
         });
 
         return {
