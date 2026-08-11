@@ -137,6 +137,15 @@ export function verifyRemittanceEntry(
     return ymdFromIstEpochMs(entry.submissionDate) === depositYmd;
   });
   const candidate = byDeposit[0] ?? byCode[0];
+  // byCode is non-empty above; guard satisfies noUncheckedIndexedAccess.
+  if (!candidate) {
+    return {
+      ...empty,
+      codeFound: true,
+      nearMisses,
+      failureReason: `Remittance code ${codeNorm} found but details do not match.`,
+    };
+  }
   const creationIst = ymdFromIstEpochMs(candidate.creationDate);
   const submissionIst =
     candidate.submissionDate == null ? null : ymdFromIstEpochMs(candidate.submissionDate);
