@@ -11,8 +11,8 @@ import type {
 } from '../types';
 import type { DateRange } from '../utils/dateRange';
 import {
-  getUtcCalendarDayRangeSeconds,
-  getUtcCalendarRangeSeconds,
+  getIstCalendarDayRangeSeconds,
+  getIstCalendarRangeSeconds,
   getRemittancePortalFetchRange,
   getRemittanceFetchRange,
   todayIstYmd,
@@ -322,8 +322,8 @@ export class AmazonLogisticsProvider implements StationDataProvider {
   ): Promise<AgeingPackageDetail[]> {
     const { resourcePath, processName, httpMethod } = AMAZON_RESOURCES.getAgeingDrillDownData;
     const lastUpdatedRange = toDate
-      ? getUtcCalendarRangeSeconds(fromDate, toDate)
-      : getUtcCalendarDayRangeSeconds(fromDate);
+      ? getIstCalendarRangeSeconds(fromDate, toDate)
+      : getIstCalendarDayRangeSeconds(fromDate);
     const pageSize = 10000;
     const filters = [
       {

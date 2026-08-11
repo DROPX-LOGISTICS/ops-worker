@@ -118,11 +118,37 @@ export function daysBetweenYmd(fromYmd: string, toYmd: string): number {
 }
 
 /**
- * Ageing dashboard (`/os/getDrillDownData`) uses unix-seconds UTC midnight
- * bounds for the selected calendar date — e.g. for 2026-08-02:
- *   startTime=1785628800 (2026-08-02T00:00:00Z)
- *   endTime=1785715200   (2026-08-03T00:00:00Z, exclusive)
- * Do not reuse IST business-day ms ranges here.
+ * Ageing dashboard (`/os/getDrillDownData`) lastUpdatedRange in unix seconds.
+ *
+ * Ops / Excel exports bucket `Last Updated Time` on the **IST calendar date**.
+ * Using bare UTC midnights drops early-morning IST rows (e.g. 4 Aug 00:29 IST
+ * = 3 Aug 18:59 UTC) and mismatches Amazon UI date pickers in India.
+ * Bounds are [IST midnight from, IST midnight of day after to) as unix seconds.
+ */
+export function getIstCalendarDayRangeSeconds(dateStr: string): DateRange {
+  const day = getBusinessDayRange(dateStr, 0);
+  return {
+    startTime: Math.floor(day.startTime / 1000),
+    endTime: Math.floor((day.startTime + MS_PER_DAY) / 1000),
+  };
+}
+
+/**
+ * Inclusive multi-day IST calendar range in unix seconds for ageing.
+ * `toYmdInclusive` maps to exclusive end = next IST midnight.
+ */
+export function getIstCalendarRangeSeconds(fromYmd: string, toYmdInclusive: string): DateRange {
+  const from = getIstCalendarDayRangeSeconds(fromYmd);
+  const to = getIstCalendarDayRangeSeconds(toYmdInclusive);
+  if (to.startTime < from.startTime) {
+    throw new Error(`Invalid ageing range: ${fromYmd} → ${toYmdInclusive}`);
+  }
+  return { startTime: from.startTime, endTime: to.endTime };
+}
+
+/**
+ * @deprecated Prefer {@link getIstCalendarDayRangeSeconds} for India station ageing.
+ * Kept for reference to older UTC-midnight probing.
  */
 export function getUtcCalendarDayRangeSeconds(dateStr: string): DateRange {
   const match = DATE_RE.exec(dateStr);
@@ -138,8 +164,7 @@ export function getUtcCalendarDayRangeSeconds(dateStr: string): DateRange {
 }
 
 /**
- * Inclusive multi-day UTC calendar range in unix seconds for ageing.
- * `toYmdInclusive` maps to exclusive end = next UTC midnight.
+ * @deprecated Prefer {@link getIstCalendarRangeSeconds}.
  */
 export function getUtcCalendarRangeSeconds(fromYmd: string, toYmdInclusive: string): DateRange {
   const from = getUtcCalendarDayRangeSeconds(fromYmd);
