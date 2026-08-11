@@ -15,6 +15,7 @@ import {
   driverReconciliationHandler,
   liabilitySummaryExecutiveHandler,
   remittanceHandler,
+  remittanceVerifyHandler,
 } from './routes/executiveAmazon';
 import {
   ciaStationHandler,
@@ -67,6 +68,7 @@ app.post('/api/admin/amazon/liability-summary', liabilitySummaryHandler);
 app.post('/api/admin/executive/driver-reconciliation', driverReconciliationHandler);
 app.post('/api/admin/executive/liability-summary', liabilitySummaryExecutiveHandler);
 app.post('/api/admin/executive/remittance', remittanceHandler);
+app.post('/api/admin/executive/remittance/verify', remittanceVerifyHandler);
 app.get('/api/admin/executive/cash-in-associate/network', ciaNetworkHandler);
 app.get('/api/admin/executive/cash-in-associate', ciaStationHandler);
 app.post('/api/admin/executive/cash-in-associate/refresh', ciaRefreshHandler);

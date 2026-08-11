@@ -12,6 +12,7 @@ import { loadWorkforceRosterMap } from '../services/workforceRoster';
 import {
   reconcileRemittancePending,
 } from '../services/remittancePending';
+import { verifyRemittanceEntry } from '../validators/remittanceVerify';
 import { round2 } from '../utils/number';
 import { cachedJson, invalidateCache } from '../utils/ttlCache';
 import { createApiResponseCacheStore } from '../store/factory';
@@ -22,6 +23,11 @@ interface StationDateBody {
   date?: string;
   /** When true, bypass the 60s response cache and recompute from Amazon. */
   fresh?: boolean;
+}
+
+interface RemittanceVerifyBody extends StationDateBody {
+  remittanceCode?: string;
+  amount?: number | string;
 }
 
 async function parseStationDate(
@@ -309,6 +315,75 @@ export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
         count: roster.count,
         syncedAt: roster.syncedAt,
       },
+    };
+  });
+}
+
+/**
+ * Verify a single remittance code + amount for a station/business day.
+ *
+ * POST /api/admin/executive/remittance/verify
+ * Header: x-admin-key
+ * { "stationCode": "JDBD", "date": "2026-08-03", "remittanceCode": "AC544759", "amount": 54953.55 }
+ */
+export async function remittanceVerifyHandler(c: Context<{ Bindings: Env }>) {
+  let body: RemittanceVerifyBody = {};
+  try {
+    body = await c.req.json<RemittanceVerifyBody>();
+  } catch {
+    /* empty body */
+  }
+
+  const stationCode = (body.stationCode || '').trim().toUpperCase();
+  if (!stationCode) {
+    throw new ValidationInputError('stationCode is required');
+  }
+  if (!ALLOWED_STATIONS.has(stationCode)) {
+    throw new ValidationInputError(`Unknown or missing station code: ${stationCode}`);
+  }
+
+  const date = body.date && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : todayIstYmd();
+  const range = getBusinessDayRange(date, Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '0'));
+  const fresh =
+    body.fresh === true || (c.req.query('fresh') ?? '').trim() === '1';
+
+  const remittanceCode = String(body.remittanceCode ?? '').trim();
+  if (!remittanceCode) {
+    throw new ValidationInputError('remittanceCode is required');
+  }
+
+  const amountRaw = body.amount;
+  const amount =
+    typeof amountRaw === 'number'
+      ? amountRaw
+      : Number(String(amountRaw ?? '').replace(/,/g, '').trim());
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new ValidationInputError('amount must be a non-negative number');
+  }
+
+  const cacheKey = `exec:remittance-verify:${stationCode}:${date}:${remittanceCode.toUpperCase()}:${round2(amount)}`;
+
+  return respondCached(c, cacheKey, fresh, async () => {
+    const session = await requireAmazonSessionOrThrow(
+      c.env,
+      `executive-remittance-verify:${stationCode}`,
+      stationCode,
+    );
+
+    const provider = createStationDataProvider(c.env);
+    const all = await provider.getRemittances(stationCode, range, session.auth);
+    const result = verifyRemittanceEntry(all, range, remittanceCode, amount);
+
+    return {
+      status: 'ok',
+      stationCode,
+      date,
+      dateRange: range,
+      remittanceCode: remittanceCode.trim().toUpperCase(),
+      amount: round2(amount),
+      sessionSource: session.sessionSource,
+      accountKey: session.accountKey,
+      ...result,
     };
   });
 }
