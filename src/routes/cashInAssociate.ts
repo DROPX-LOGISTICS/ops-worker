@@ -4,6 +4,7 @@ import { ALLOWED_STATIONS, API_CACHE_TTL_MS, CIA_PROCESSING_MARKER } from '../co
 import { createCiaSnapshotStore, createApiResponseCacheStore } from '../store/factory';
 import { ValidationInputError } from '../errors';
 import { round2 } from '../utils/number';
+import { addDaysYmd, todayIstYmd } from '../utils/dateRange';
 import { cachedJson, invalidateCacheAll } from '../utils/ttlCache';
 import {
   processCiaSnapshotTick,
@@ -42,30 +43,44 @@ type CiaReadResult =
 
 /**
  * GET /api/admin/executive/cash-in-associate?stationCode=KTUO
- * Serves the latest completed snapshot for one station (60s cached).
+ * Optional `asOfDate=YYYY-MM-DD` loads that day's saved report (default: latest).
+ * Serves one station from a completed snapshot (60s cached).
  */
 export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
   const stationCode = (c.req.query('stationCode') ?? '').trim().toUpperCase();
+  const asOfDateQuery = (c.req.query('asOfDate') ?? '').trim();
   if (!stationCode) throw new ValidationInputError('stationCode is required');
   if (!ALLOWED_STATIONS.has(stationCode)) {
     throw new ValidationInputError(`Station ${stationCode} is not allowed`);
   }
 
   const shared = createApiResponseCacheStore(c.env);
+  const cacheKey = `cia:station:${stationCode}:${asOfDateQuery || 'latest'}`;
   const { value, cacheHit } = await cachedJson<CiaReadResult>(
-    `cia:station:${stationCode}`,
+    cacheKey,
     API_CACHE_TTL_MS,
     async () => {
       const store = createCiaSnapshotStore(c.env);
-      const run = await store.getLatestReadableRun();
+      const sinceDate = addDaysYmd(todayIstYmd(), -90);
+      const recentRuns = await store.listReadableRunsSince(sinceDate);
+      const availableReportDates = [...new Set(recentRuns.map((r) => r.asOfDate))].sort(
+        (a, b) => b.localeCompare(a),
+      );
+
+      const run = asOfDateQuery
+        ? await store.getReadableRunByAsOfDate(asOfDateQuery)
+        : await store.getLatestReadableRun();
+
       if (!run) {
         return {
           kind: 'not_found',
           body: {
             status: 'not_found',
-            code: 'NO_CIA_SNAPSHOT',
-            message:
-              'No Cash In Associate snapshot yet. Wait for the 06:00 IST cron or POST refresh.',
+            code: asOfDateQuery ? 'NO_CIA_SNAPSHOT_FOR_DATE' : 'NO_CIA_SNAPSHOT',
+            message: asOfDateQuery
+              ? `No Cash In Associate report saved for ${asOfDateQuery}. Try another date or refresh this station.`
+              : 'No Cash In Associate snapshot yet. Wait for the 06:00 IST cron or POST refresh.',
+            availableReportDates,
           },
         };
       }
@@ -77,8 +92,9 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
           body: {
             status: 'not_found',
             code: 'STATION_NOT_IN_SNAPSHOT',
-            message: `Station ${stationCode} missing from snapshot run ${run.id}`,
+            message: `Station ${stationCode} is not in the report saved for ${run.asOfDate}.`,
             run: { id: run.id, asOfDate: run.asOfDate, status: run.status },
+            availableReportDates,
           },
         };
       }
@@ -98,6 +114,7 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
           summary: snap.summary,
           ledger: snap.payload.ledger,
           pendingDrivers: snap.payload.pendingDrivers,
+          availableReportDates,
         },
       };
     },

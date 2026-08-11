@@ -166,6 +166,41 @@ export class CiaSnapshotStore {
     return data ? toRun(data as RunRow) : null;
   }
 
+  /** Readable run for a specific as-of date (most recent finished if duplicates). */
+  async getReadableRunByAsOfDate(asOfDate: string): Promise<CiaSnapshotRun | null> {
+    const { data, error } = await this.client
+      .from('cia_snapshot_runs')
+      .select('*')
+      .eq('as_of_date', asOfDate)
+      .in('status', ['completed', 'completed_with_errors'])
+      .order('finished_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      console.error('CiaSnapshotStore.getReadableRunByAsOfDate failed', error);
+      return null;
+    }
+    return data ? toRun(data as RunRow) : null;
+  }
+
+  /** Finished runs since a calendar date (for report-date picker). */
+  async listReadableRunsSince(sinceDate: string, limit = 120): Promise<CiaSnapshotRun[]> {
+    const { data, error } = await this.client
+      .from('cia_snapshot_runs')
+      .select('*')
+      .in('status', ['completed', 'completed_with_errors'])
+      .gte('as_of_date', sinceDate)
+      .order('as_of_date', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      console.error('CiaSnapshotStore.listReadableRunsSince failed', error);
+      return [];
+    }
+    return ((data as RunRow[] | null) ?? []).map(toRun);
+  }
+
   /** Most recent running run (for continuation / avoid duplicates). */
   async getActiveRunningRun(): Promise<CiaSnapshotRun | null> {
     const { data, error } = await this.client
