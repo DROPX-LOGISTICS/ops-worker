@@ -372,7 +372,7 @@ export async function remittanceVerifyHandler(c: Context<{ Bindings: Env }>) {
 
     const provider = createStationDataProvider(c.env);
     const all = await provider.getRemittances(stationCode, range, session.auth);
-    const result = verifyRemittanceEntry(all, range, remittanceCode, amount);
+    const result = verifyRemittanceEntry(all, range, remittanceCode, amount, date);
 
     return {
       status: 'ok',
