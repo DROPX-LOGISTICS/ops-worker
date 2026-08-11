@@ -112,6 +112,15 @@ function parseAmount(value: string | number | null | undefined): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** YYYY-MM-DD from ageing lastUpdatedTime (supports `2026-08-11` or `2026-08-11 14:30:00`). */
+function ageingUpdatedYmd(lastUpdatedTime: string | null | undefined): string | null {
+  if (!lastUpdatedTime) return null;
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(lastUpdatedTime.trim());
+  if (m) return m[1]!;
+  const part = lastUpdatedTime.trim().split(/[\sT]/)[0];
+  return part && /^\d{4}-\d{2}-\d{2}$/.test(part) ? part : null;
+}
+
 function normaliseAgeingPackage(row: RawAgeingPackage): AgeingPackageDetail {
   return {
     trackingId: row.trackingId ?? '',
@@ -353,6 +362,11 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     );
 
     const requestedCode = stationCode.trim().toUpperCase();
+    const today = todayIstYmd();
+    // CIA / historical ranges end at yesterday — drop any row Amazon still
+    // tags with today's lastUpdatedTime. Same-day requests (end === today) keep them.
+    const endYmd = toDate ?? fromDate;
+    const excludeTodayUpdates = endYmd < today;
     const byTrackingId = new Map<string, AgeingPackageDetail>();
     for (const row of pages.flat()) {
       // Mother-station ageing can include sub-station rows.
@@ -361,6 +375,9 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       // - Sub-station NOT on our allowlist → keep under the mother (otherwise lost)
       const rowStation = row.stationCode?.trim().toUpperCase() || null;
       if (rowStation && rowStation !== requestedCode && ALLOWED_STATIONS.has(rowStation)) {
+        continue;
+      }
+      if (excludeTodayUpdates && ageingUpdatedYmd(row.lastUpdatedTime) === today) {
         continue;
       }
       if (!row.trackingId || byTrackingId.has(row.trackingId)) continue;
