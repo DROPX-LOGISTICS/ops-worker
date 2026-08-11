@@ -4,8 +4,12 @@ import { ALLOWED_STATIONS, API_CACHE_TTL_MS, CIA_PROCESSING_MARKER } from '../co
 import { createCiaSnapshotStore, createApiResponseCacheStore } from '../store/factory';
 import { ValidationInputError } from '../errors';
 import { round2 } from '../utils/number';
-import { addDaysYmd, todayIstYmd } from '../utils/dateRange';
+import { addDaysYmd, daysBetweenYmd, todayIstYmd } from '../utils/dateRange';
 import { cachedJson, invalidateCacheAll } from '../utils/ttlCache';
+import { createStationDataProvider } from '../providers/factory';
+import { ensureValidAmazonSession } from '../session/ensureSession';
+import { loadWorkforceRosterMap } from '../services/workforceRoster';
+import { reconcileCashInAssociate } from '../services/cashInAssociate';
 import {
   processCiaSnapshotTick,
   refreshCiaStation,
@@ -41,6 +45,10 @@ type CiaReadResult =
   | { kind: 'ok'; body: Record<string, unknown> }
   | { kind: 'not_found'; body: Record<string, unknown> };
 
+function isValidYmd(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
 /**
  * GET /api/admin/executive/cash-in-associate?stationCode=KTUO
  * Optional `asOfDate=YYYY-MM-DD` loads that day's saved report (default: latest).
@@ -49,13 +57,38 @@ type CiaReadResult =
 export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
   const stationCode = (c.req.query('stationCode') ?? '').trim().toUpperCase();
   const asOfDateQuery = (c.req.query('asOfDate') ?? '').trim();
+  const fromDateQuery = (c.req.query('fromDate') ?? '').trim();
+  const toDateQuery = (c.req.query('toDate') ?? '').trim();
   if (!stationCode) throw new ValidationInputError('stationCode is required');
   if (!ALLOWED_STATIONS.has(stationCode)) {
     throw new ValidationInputError(`Station ${stationCode} is not allowed`);
   }
+  if ((fromDateQuery && !toDateQuery) || (!fromDateQuery && toDateQuery)) {
+    throw new ValidationInputError('fromDate and toDate must be provided together');
+  }
+  if (fromDateQuery && toDateQuery) {
+    if (!isValidYmd(fromDateQuery) || !isValidYmd(toDateQuery)) {
+      throw new ValidationInputError('fromDate and toDate must be YYYY-MM-DD');
+    }
+    if (toDateQuery < fromDateQuery) {
+      throw new ValidationInputError('toDate must be on or after fromDate');
+    }
+    const yesterday = addDaysYmd(todayIstYmd(), -1);
+    const earliest = addDaysYmd(yesterday, -89);
+    if (fromDateQuery < earliest || toDateQuery > yesterday) {
+      throw new ValidationInputError(
+        `Date range must stay between ${earliest} and ${yesterday} (up to 90 days).`,
+      );
+    }
+    if (daysBetweenYmd(fromDateQuery, toDateQuery) > 89) {
+      throw new ValidationInputError('Date range cannot exceed 90 days');
+    }
+  }
 
   const shared = createApiResponseCacheStore(c.env);
-  const cacheKey = `cia:station:${stationCode}:${asOfDateQuery || 'latest'}`;
+  const cacheKey = fromDateQuery && toDateQuery
+    ? `cia:station-live:${stationCode}:${fromDateQuery}:${toDateQuery}`
+    : `cia:station:${stationCode}:${asOfDateQuery || 'latest'}`;
   const { value, cacheHit } = await cachedJson<CiaReadResult>(
     cacheKey,
     API_CACHE_TTL_MS,
@@ -66,6 +99,49 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
       const availableReportDates = [...new Set(recentRuns.map((r) => r.asOfDate))].sort(
         (a, b) => b.localeCompare(a),
       );
+
+      if (fromDateQuery && toDateQuery) {
+        const ensured = await ensureValidAmazonSession(c.env, {
+          triggeredBy: `cia-station-range:${stationCode}`,
+          stationCode,
+          notifyOnFailure: true,
+        });
+        if (!ensured.ok) {
+          throw new Error(ensured.error);
+        }
+
+        const provider = createStationDataProvider(c.env);
+        const workforce = await loadWorkforceRosterMap(c.env, { accountKey: ensured.accountKey });
+        const payload = await reconcileCashInAssociate({
+          stationCode,
+          fromDate: fromDateQuery,
+          toDate: toDateQuery,
+          startHourIst: Number(c.env.BUSINESS_DAY_START_HOUR_IST || '0') || 0,
+          provider,
+          auth: ensured.auth,
+          workforceByTransporterId: workforce.byTransporterId,
+        });
+
+        return {
+          kind: 'ok',
+          body: {
+            status: 'ok',
+            asOfDate: toDateQuery,
+            window: { from: fromDateQuery, to: toDateQuery },
+            runStatus: null,
+            runId: null,
+            stationCode,
+            snapshotStatus: 'ok',
+            error: null,
+            fetchedAt: new Date().toISOString(),
+            summary: payload.summary,
+            ledger: payload.ledger,
+            pendingDrivers: payload.pendingDrivers,
+            availableReportDates,
+            mode: 'live_range',
+          },
+        };
+      }
 
       const run = asOfDateQuery
         ? await store.getReadableRunByAsOfDate(asOfDateQuery)
