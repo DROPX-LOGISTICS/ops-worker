@@ -20,6 +20,7 @@ import {
 import {
   ciaStationHandler,
   ciaNetworkHandler,
+  ciaDailyLedgerHandler,
   ciaRefreshHandler,
   ciaContinueHandler,
 } from './routes/cashInAssociate';
@@ -70,6 +71,7 @@ app.post('/api/admin/executive/liability-summary', liabilitySummaryExecutiveHand
 app.post('/api/admin/executive/remittance', remittanceHandler);
 app.post('/api/admin/executive/remittance/verify', remittanceVerifyHandler);
 app.get('/api/admin/executive/cash-in-associate/network', ciaNetworkHandler);
+app.get('/api/admin/executive/cash-in-associate/daily-ledger', ciaDailyLedgerHandler);
 app.get('/api/admin/executive/cash-in-associate', ciaStationHandler);
 app.post('/api/admin/executive/cash-in-associate/refresh', ciaRefreshHandler);
 app.post('/api/admin/internal/cia-snapshot/continue', ciaContinueHandler);

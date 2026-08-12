@@ -385,20 +385,27 @@ export async function saveCiaStationPayload(
 
   const store = createCiaSnapshotStore(env);
   const window = getCiaAnalysisWindow();
-  let run = await store.getLatestReadableRun();
+  const fullCount = stationList().length;
+
+  // Prefer today's active full run, else a solid completed same-day run.
+  // Never attach to a 1-station "completed" patch as the network source of truth.
+  let run = await store.getActiveRunningRun();
   if (!run || run.asOfDate !== window.asOfDate) {
-    const running = await store.getActiveRunningRun();
-    run = running && running.asOfDate === window.asOfDate ? running : null;
+    const best = await store.getBestCompletedNetworkRun(Math.min(2, fullCount));
+    run =
+      best && best.asOfDate === window.asOfDate && best.stationsTotal >= Math.min(2, fullCount)
+        ? best
+        : null;
   }
-  let createdOneOff = false;
   if (!run) {
+    // Always size as a full network run so a single-station patch cannot
+    // become the "latest completed" view with only one station.
     run = await store.createRun({
       asOfDate: window.asOfDate,
       windowFrom: window.fromDate,
       windowTo: window.toDate,
-      stationsTotal: 1,
+      stationsTotal: fullCount,
     });
-    createdOneOff = true;
   }
 
   const accountKey = portalAccountKeyForStation(code);
@@ -421,18 +428,9 @@ export async function saveCiaStationPayload(
     payload: normalized,
   });
 
-  if (createdOneOff) {
-    await store.finalizeRun({
-      runId: run.id,
-      status: 'completed',
-      stationsOk: 1,
-      stationsFailed: 0,
-    });
-  } else if (run.status === 'running') {
-    const counters = await store.syncRunCountersFromSnapshots(run.id);
-    if (counters.finishedCount >= stationList().length && counters.inFlightCount === 0) {
-      await finalizeFromSnapshots(env, run.id, stationList().length);
-    }
+  const counters = await store.syncRunCountersFromSnapshots(run.id);
+  if (counters.finishedCount >= stationList().length && counters.inFlightCount === 0) {
+    await finalizeFromSnapshots(env, run.id, stationList().length);
   }
 
   return { runId: run.id, snapshotStatus: 'ok' };
@@ -453,20 +451,23 @@ export async function refreshCiaStation(
 
   const store = createCiaSnapshotStore(env);
   const window = getCiaAnalysisWindow();
-  let run = await store.getLatestReadableRun();
+  const fullCount = stationList().length;
+
+  let run = await store.getActiveRunningRun();
   if (!run || run.asOfDate !== window.asOfDate) {
-    const running = await store.getActiveRunningRun();
-    run = running && running.asOfDate === window.asOfDate ? running : null;
+    const best = await store.getBestCompletedNetworkRun(Math.min(2, fullCount));
+    run =
+      best && best.asOfDate === window.asOfDate && best.stationsTotal >= Math.min(2, fullCount)
+        ? best
+        : null;
   }
-  let createdOneOff = false;
   if (!run) {
     run = await store.createRun({
       asOfDate: window.asOfDate,
       windowFrom: window.fromDate,
       windowTo: window.toDate,
-      stationsTotal: 1,
+      stationsTotal: fullCount,
     });
-    createdOneOff = true;
   }
 
   const roster = await loadWorkforceRosterMap(env);
@@ -489,18 +490,9 @@ export async function refreshCiaStation(
       summary: result.payload.summary,
       payload: result.payload,
     });
-    if (createdOneOff) {
-      await store.finalizeRun({
-        runId: run.id,
-        status: 'completed',
-        stationsOk: 1,
-        stationsFailed: 0,
-      });
-    } else if (run.status === 'running') {
-      const counters = await store.syncRunCountersFromSnapshots(run.id);
-      if (counters.finishedCount >= stationList().length && counters.inFlightCount === 0) {
-        await finalizeFromSnapshots(env, run.id, stationList().length);
-      }
+    const counters = await store.syncRunCountersFromSnapshots(run.id);
+    if (counters.finishedCount >= stationList().length && counters.inFlightCount === 0) {
+      await finalizeFromSnapshots(env, run.id, stationList().length);
     }
     return { runId: run.id, snapshotStatus: 'ok' };
   }
@@ -515,17 +507,7 @@ export async function refreshCiaStation(
     summary: payload.summary,
     payload,
   });
-  if (createdOneOff) {
-    await store.finalizeRun({
-      runId: run.id,
-      status: 'failed',
-      stationsOk: 0,
-      stationsFailed: 1,
-      error: result.error,
-    });
-  } else if (run.status === 'running') {
-    await store.syncRunCountersFromSnapshots(run.id);
-  }
+  await store.syncRunCountersFromSnapshots(run.id);
   return { runId: run.id, snapshotStatus: 'error', error: result.error };
 }
 

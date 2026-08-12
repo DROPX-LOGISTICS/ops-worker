@@ -167,6 +167,67 @@ export class CiaSnapshotStore {
     return data ? toRun(data as RunRow) : null;
   }
 
+  /**
+   * Best completed network run: prefer fullest station coverage, not a
+   * one-station "completed" patch that would hide the prior full network view.
+   */
+  async getBestCompletedNetworkRun(minStationsOk = 2): Promise<CiaSnapshotRun | null> {
+    const { data, error } = await this.client
+      .from('cia_snapshot_runs')
+      .select('*')
+      .in('status', ['completed', 'completed_with_errors'])
+      .order('as_of_date', { ascending: false })
+      .order('stations_ok', { ascending: false })
+      .order('finished_at', { ascending: false })
+      .limit(20);
+
+    if (error) {
+      console.error('CiaSnapshotStore.getBestCompletedNetworkRun failed', error);
+      return null;
+    }
+    const rows = ((data as RunRow[] | null) ?? []).map(toRun);
+    // Prefer real finished coverage (stations_ok), never stations_total alone —
+    // a 1-station patch still has stations_total = full network size.
+    const ranked = [...rows].sort((a, b) => {
+      if (b.stationsOk !== a.stationsOk) return b.stationsOk - a.stationsOk;
+      if (b.asOfDate !== a.asOfDate) return b.asOfDate.localeCompare(a.asOfDate);
+      return String(b.finishedAt ?? '').localeCompare(String(a.finishedAt ?? ''));
+    });
+    const full = ranked.find((r) => r.stationsOk >= minStationsOk);
+    return full ?? ranked[0] ?? null;
+  }
+
+  /**
+   * Run to show on the network page:
+   * Prefer the fullest completed multi-station run.
+   * If a refresh is running, still show that full completed view and attach
+   * progress separately — never replace the network list with 1 fresh station.
+   */
+  async resolveNetworkRun(fullStationCount: number): Promise<{
+    run: CiaSnapshotRun | null;
+    source: 'running' | 'completed' | 'none';
+    progress: CiaSnapshotRun | null;
+  }> {
+    const minOk = Math.max(2, Math.floor(fullStationCount * 0.25));
+    const best = await this.getBestCompletedNetworkRun(minOk);
+    const running = await this.getActiveRunningRun();
+
+    if (best) {
+      return { run: best, source: 'completed', progress: running };
+    }
+
+    // No solid completed run yet — only then show in-progress stations.
+    if (running) {
+      const finished = await this.listFinishedStationSnapshots(running.id);
+      if (finished.length > 0) {
+        return { run: running, source: 'running', progress: running };
+      }
+    }
+
+    const latest = await this.getLatestReadableRun();
+    return { run: latest, source: latest ? 'completed' : 'none', progress: running };
+  }
+
   /** Readable run for a specific as-of date (most recent finished if duplicates). */
   async getReadableRunByAsOfDate(asOfDate: string): Promise<CiaSnapshotRun | null> {
     const { data, error } = await this.client

@@ -209,7 +209,10 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
 
 /**
  * GET /api/admin/executive/cash-in-associate/network
- * Network rollup of CIA totals across all stations from the latest snapshot (60s cached).
+ * Network rollup of CIA totals across stations.
+ * Uses the fullest completed multi-station run as the base view; if a full
+ * refresh is running, merges finished stations from progress onto that base
+ * so "Refresh all" never collapses the list to one station (e.g. ERSE).
  */
 export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
   const shared = createApiResponseCacheStore(c.env);
@@ -218,7 +221,7 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
     API_CACHE_TTL_MS,
     async () => {
       const store = createCiaSnapshotStore(c.env);
-      const run = await store.getLatestReadableRun();
+      const { run, source, progress } = await store.resolveNetworkRun(ALLOWED_STATIONS.size);
       if (!run) {
         return {
           kind: 'not_found',
@@ -231,9 +234,21 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
         };
       }
 
-      const snaps = await store.listFinishedStationSnapshots(run.id);
+      const baseSnaps = await store.listFinishedStationSnapshots(run.id);
+      const byCode = new Map(baseSnaps.map((s) => [s.stationCode, s]));
+      if (progress && progress.id !== run.id) {
+        for (const snap of await store.listFinishedStationSnapshots(progress.id)) {
+          byCode.set(snap.stationCode, snap);
+        }
+      }
+      const snaps = [...byCode.values()].sort((a, b) => a.stationCode.localeCompare(b.stationCode));
       const okSummaries = snaps.filter((s) => s.status === 'ok').map((s) => s.summary);
       const totals = sumSummaries(okSummaries);
+      const stationsOk = snaps.filter((s) => s.status === 'ok').length;
+      const stationsFailed = snaps.filter((s) => s.status === 'error').length;
+      const progressCounters = progress
+        ? await store.syncRunCountersFromSnapshots(progress.id)
+        : null;
 
       return {
         kind: 'ok',
@@ -241,15 +256,25 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
           status: 'ok',
           asOfDate: run.asOfDate,
           window: { from: run.windowFrom, to: run.windowTo },
+          runSource: source,
           run: {
             id: run.id,
             status: run.status,
             startedAt: run.startedAt,
             finishedAt: run.finishedAt,
-            stationsTotal: run.stationsTotal,
-            stationsOk: run.stationsOk,
-            stationsFailed: run.stationsFailed,
+            stationsTotal: Math.max(run.stationsTotal, ALLOWED_STATIONS.size),
+            stationsOk,
+            stationsFailed,
           },
+          refreshProgress: progress
+            ? {
+                id: progress.id,
+                status: progress.status,
+                stationsTotal: Math.max(progress.stationsTotal, ALLOWED_STATIONS.size),
+                stationsOk: progressCounters?.stationsOk ?? progress.stationsOk,
+                stationsFailed: progressCounters?.stationsFailed ?? progress.stationsFailed,
+              }
+            : null,
           totals,
           stations: snaps.map((s) => ({
             stationCode: s.stationCode,
@@ -259,6 +284,148 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
             accountKey: s.accountKey,
             ...s.summary,
           })),
+        },
+      };
+    },
+    shared,
+  );
+
+  return c.json({ ...value.body, cached: cacheHit }, value.kind === 'ok' ? 200 : 404);
+}
+
+/**
+ * GET /api/admin/executive/cash-in-associate/daily-ledger
+ * Optional `date=YYYY-MM-DD` — day-wise Cash In Associate ledger across stations
+ * from the network snapshot (expected CIA cash, deposits, pending, forwarded).
+ */
+export async function ciaDailyLedgerHandler(c: Context<{ Bindings: Env }>) {
+  const dateQuery = (c.req.query('date') ?? '').trim();
+  if (dateQuery && !isValidYmd(dateQuery)) {
+    throw new ValidationInputError('date must be YYYY-MM-DD');
+  }
+
+  const shared = createApiResponseCacheStore(c.env);
+  const cacheKey = `cia:daily-ledger:${dateQuery || 'all'}`;
+  const { value, cacheHit } = await cachedJson<CiaReadResult>(
+    cacheKey,
+    API_CACHE_TTL_MS,
+    async () => {
+      const store = createCiaSnapshotStore(c.env);
+      const { run, source, progress } = await store.resolveNetworkRun(ALLOWED_STATIONS.size);
+      if (!run) {
+        return {
+          kind: 'not_found',
+          body: {
+            status: 'not_found',
+            code: 'NO_CIA_SNAPSHOT',
+            message: 'No Cash In Associate snapshot yet.',
+          },
+        };
+      }
+
+      const baseSnaps = (await store.listFinishedStationSnapshots(run.id)).filter(
+        (s) => s.status === 'ok',
+      );
+      const byCode = new Map(baseSnaps.map((s) => [s.stationCode, s]));
+      if (progress && progress.id !== run.id) {
+        for (const snap of await store.listFinishedStationSnapshots(progress.id)) {
+          if (snap.status === 'ok') byCode.set(snap.stationCode, snap);
+        }
+      }
+      const snaps = [...byCode.values()];
+
+      type DayAgg = {
+        date: string;
+        cashWithAssociate: number;
+        deposited: number;
+        pending: number;
+        forwarded: number;
+        stationCount: number;
+      };
+      type StationDay = {
+        stationCode: string;
+        date: string;
+        cashWithAssociate: number;
+        deposited: number;
+        pending: number;
+        forwarded: number;
+      };
+
+      const byDate = new Map<string, DayAgg>();
+      const stationDays: StationDay[] = [];
+
+      for (const snap of snaps) {
+        const ledger = Array.isArray(snap.payload?.ledger) ? snap.payload.ledger : [];
+        for (const day of ledger) {
+          const date = String(day.date ?? '').trim();
+          if (!date) continue;
+          if (dateQuery && date !== dateQuery) continue;
+
+          const cashWithAssociate = round2(Number(day.expectedCashTotal ?? 0) || 0);
+          const deposited = round2(Number(day.remittanceTotalCash ?? 0) || 0);
+          const pending = round2(Number(day.stillPendingAmount ?? 0) || 0);
+          const forwarded = round2(Number(day.forwardedAmount ?? 0) || 0);
+
+          stationDays.push({
+            stationCode: snap.stationCode,
+            date,
+            cashWithAssociate,
+            deposited,
+            pending,
+            forwarded,
+          });
+
+          const agg = byDate.get(date) ?? {
+            date,
+            cashWithAssociate: 0,
+            deposited: 0,
+            pending: 0,
+            forwarded: 0,
+            stationCount: 0,
+          };
+          agg.cashWithAssociate = round2(agg.cashWithAssociate + cashWithAssociate);
+          agg.deposited = round2(agg.deposited + deposited);
+          agg.pending = round2(agg.pending + pending);
+          agg.forwarded = round2(agg.forwarded + forwarded);
+          if (cashWithAssociate > 0 || deposited > 0 || pending > 0 || forwarded > 0) {
+            agg.stationCount += 1;
+          }
+          byDate.set(date, agg);
+        }
+      }
+
+      const days = [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date));
+      stationDays.sort(
+        (a, b) => b.date.localeCompare(a.date) || a.stationCode.localeCompare(b.stationCode),
+      );
+
+      const totals = days.reduce(
+        (acc, d) => ({
+          cashWithAssociate: round2(acc.cashWithAssociate + d.cashWithAssociate),
+          deposited: round2(acc.deposited + d.deposited),
+          pending: round2(acc.pending + d.pending),
+          forwarded: round2(acc.forwarded + d.forwarded),
+        }),
+        { cashWithAssociate: 0, deposited: 0, pending: 0, forwarded: 0 },
+      );
+
+      return {
+        kind: 'ok',
+        body: {
+          status: 'ok',
+          asOfDate: run.asOfDate,
+          window: { from: run.windowFrom, to: run.windowTo },
+          selectedDate: dateQuery || null,
+          runSource: source,
+          run: {
+            id: run.id,
+            status: run.status,
+            stationsTotal: Math.max(run.stationsTotal, ALLOWED_STATIONS.size),
+            stationsOk: run.stationsOk,
+          },
+          totals,
+          days,
+          stationDays,
         },
       };
     },
