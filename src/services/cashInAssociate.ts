@@ -14,19 +14,21 @@ import type {
 } from '../types';
 import {
   CIA_LOOKBACK_DAYS,
+  CIA_REFRESH_CHUNK_DAYS,
   CIA_REMITTANCE_DETAILS_CONCURRENCY,
   CIA_REMITTANCE_DETAILS_MAX,
   CIA_REMITTANCE_FETCH_COUNT,
 } from '../config';
 import {
   addDaysYmd,
+  ageingCalendarYmd,
+  businessYmdFromEpochMs,
   daysBetweenYmd,
   getBusinessDayRange,
   REMITTANCE_LOOKBACK_DAYS,
   todayIstYmd,
-  ymdFromIstEpochMs,
 } from '../utils/dateRange';
-import { classifyReconState } from '../utils/reconState';
+import { classifyReconState, normalizeReconState } from '../utils/reconState';
 import { round2 } from '../utils/number';
 import {
   buildClearedTrackingMap,
@@ -35,14 +37,16 @@ import {
 } from './remittancePending';
 
 /**
- * Ageing buckets for CIA + Cash At Station cash.
- * CIA rows also appear under Received → DS -> Customer.
+ * Excel / Amazon ageing pivot for CIA gap:
+ * - Cash With Associate + Cash At Station (main)
+ * - Delivered is fetched only so rare TR_CANCELLED CASH rows (e.g. ₹206) match
+ *   Excel; normal Delivered CASH is excluded in filterAgeingCashPackages.
+ * Do NOT add Received → DS->Customer.
  */
 export const CIA_AGEING_STATUSES: AgeingStatusSelector[] = [
   'Cash With Associate',
   'Cash At Station',
   'Delivered',
-  { status: 'Received', values: ['DS -> Customer'] },
 ];
 
 function isCashMethod(method: string | null | undefined): boolean {
@@ -54,6 +58,22 @@ function isCashPackage(pkg: AgeingPackageDetail): boolean {
   return isCashMethod(pkg.actualPaymentMethod) || isCashMethod(pkg.paymentMethod);
 }
 
+function normalizeReason(reason: string | null | undefined): string {
+  return (reason ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_');
+}
+
+/**
+ * Delivered CASH that still appears on Excel ageing cash pivots.
+ * Normal successful Delivered rows must not inflate ageingTotal.
+ */
+function isExcelDeliveredCashEdge(pkg: AgeingPackageDetail): boolean {
+  if (normalizeReconState(pkg.state) !== 'DELIVERED') return false;
+  return normalizeReason(pkg.reason) === 'TR_CANCELLED';
+}
+
 /** Ageing money fields are often in paise. */
 function toRupees(amount: number): number {
   return round2(amount / 100);
@@ -61,6 +81,17 @@ function toRupees(amount: number): number {
 
 function sumCashPackageRupees(packages: AgeingPackageDetail[]): number {
   return round2(packages.reduce((s, p) => s + toRupees(p.receivableAmount), 0));
+}
+
+/** Per-day CASH receivable (CIA + CAS) — matches Excel calendar-day pivot. */
+function cashReceivableByCalendarDay(packages: AgeingPackageDetail[]): Map<string, number> {
+  const byDay = new Map<string, number>();
+  for (const pkg of packages) {
+    const day = ageingCalendarYmd(pkg.lastUpdatedTime);
+    if (!day) continue;
+    byDay.set(day, round2((byDay.get(day) ?? 0) + toRupees(pkg.receivableAmount)));
+  }
+  return byDay;
 }
 
 /** Yesterday IST back through CIA_LOOKBACK_DAYS (excludes today). */
@@ -73,6 +104,163 @@ export function getCiaAnalysisWindow(nowMs = Date.now()): {
   const toDate = addDaysYmd(today, -1);
   const fromDate = addDaysYmd(toDate, -(CIA_LOOKBACK_DAYS - 1));
   return { asOfDate: toDate, fromDate, toDate };
+}
+
+/** Inclusive YYYY-MM-DD slices of at most `chunkDays` calendar days. */
+export function splitYmdRange(
+  fromDate: string,
+  toDate: string,
+  chunkDays = CIA_REFRESH_CHUNK_DAYS,
+): Array<{ from: string; to: string }> {
+  if (toDate < fromDate) return [];
+  const chunks: Array<{ from: string; to: string }> = [];
+  let cursor = fromDate;
+  while (cursor <= toDate) {
+    const chunkTo = addDaysYmd(cursor, chunkDays - 1);
+    const to = chunkTo < toDate ? chunkTo : toDate;
+    chunks.push({ from: cursor, to });
+    cursor = addDaysYmd(to, 1);
+  }
+  return chunks;
+}
+
+function driverMergeKey(d: CiaPendingDriver): string {
+  const tas = String(d.tasId ?? '').trim().toUpperCase();
+  if (tas) return `tas:${tas}`;
+  const emp = String(d.employeeId ?? '').trim().toUpperCase();
+  if (emp) return `emp:${emp}`;
+  return `name:${String(d.driverName ?? '').trim().toLowerCase()}`;
+}
+
+/**
+ * Merge live-range CIA payloads from contiguous date chunks into one snapshot.
+ * Totals are summed; drivers/shipments deduped by tracking id.
+ */
+export function mergeCiaStationPayloads(
+  parts: CiaStationPayload[],
+  window: { from: string; to: string },
+): CiaStationPayload {
+  if (parts.length === 0) {
+    return {
+      window,
+      summary: emptySummary(false, window.from),
+      ledger: [],
+      pendingDrivers: [],
+    };
+  }
+  if (parts.length === 1) {
+    const only = parts[0]!;
+    return {
+      ...only,
+      window: { from: window.from, to: window.to },
+      summary: {
+        ...only.summary,
+        alignedFromDate: only.summary.alignedFromDate || window.from,
+        cashDifference: round2(only.summary.ageingTotal - only.summary.depositedTotal),
+        difference: round2(only.summary.ageingTotal - only.summary.depositedTotal),
+      },
+    };
+  }
+
+  const ledgerByDate = new Map<string, (typeof parts)[0]['ledger'][number]>();
+  for (const part of parts) {
+    for (const day of part.ledger ?? []) {
+      if (!ledgerByDate.has(day.date)) ledgerByDate.set(day.date, day);
+    }
+  }
+
+  const drivers = new Map<
+    string,
+    CiaPendingDriver & { dateSet: Set<string>; shipmentByTracking: Map<string, CiaPendingDriver['shipments'][number]> }
+  >();
+  for (const part of parts) {
+    for (const d of part.pendingDrivers ?? []) {
+      const key = driverMergeKey(d);
+      let acc = drivers.get(key);
+      if (!acc) {
+        acc = {
+          driverName: d.driverName,
+          tasId: d.tasId,
+          employeeId: d.employeeId,
+          operationalStatus: d.operationalStatus,
+          mappedFromWorkforce: d.mappedFromWorkforce,
+          amount: 0,
+          shipmentCount: 0,
+          dates: [],
+          shipments: [],
+          dateSet: new Set<string>(),
+          shipmentByTracking: new Map(),
+        };
+        drivers.set(key, acc);
+      }
+      for (const s of d.shipments ?? []) {
+        const tid = (s.trackingId ?? '').trim();
+        if (!tid || acc.shipmentByTracking.has(tid)) continue;
+        acc.shipmentByTracking.set(tid, s);
+        if (s.keptOnDate) acc.dateSet.add(s.keptOnDate);
+      }
+    }
+  }
+
+  const pendingDrivers = [...drivers.values()]
+    .map((a) => {
+      const shipments = [...a.shipmentByTracking.values()].sort((x, y) =>
+        (x.keptOnDate ?? '').localeCompare(y.keptOnDate ?? ''),
+      );
+      const amount = round2(shipments.reduce((s, row) => s + (row.pendingAmount ?? 0), 0));
+      return {
+        driverName: a.driverName,
+        tasId: a.tasId,
+        employeeId: a.employeeId,
+        operationalStatus: a.operationalStatus,
+        mappedFromWorkforce: a.mappedFromWorkforce,
+        amount,
+        shipmentCount: shipments.length,
+        dates: [...a.dateSet].sort(),
+        shipments,
+      };
+    })
+    .sort((a, b) => b.amount - a.amount);
+
+  const ciaTotal = round2(parts.reduce((s, p) => s + (p.summary.ciaTotal ?? 0), 0));
+  const cashAtStationTotal = round2(
+    parts.reduce((s, p) => s + (p.summary.cashAtStationTotal ?? 0), 0),
+  );
+  const ageingTotal = round2(parts.reduce((s, p) => s + (p.summary.ageingTotal ?? 0), 0));
+  const depositedTotal = round2(parts.reduce((s, p) => s + (p.summary.depositedTotal ?? 0), 0));
+  const pendingLiability = round2(
+    parts.reduce((s, p) => s + (p.summary.pendingLiability ?? 0), 0),
+  );
+  const clearedInWindow = round2(
+    parts.reduce((s, p) => s + (p.summary.clearedInWindow ?? 0), 0),
+  );
+  const shipmentCount = parts.reduce((s, p) => s + (p.summary.shipmentCount ?? 0), 0);
+  const limitedByRemittanceWindow = parts.some((p) => p.summary.limitedByRemittanceWindow);
+  const alignedDates = parts
+    .map((p) => p.summary.alignedFromDate)
+    .filter(Boolean)
+    .sort();
+  const cashDifference = round2(ageingTotal - depositedTotal);
+
+  return {
+    window: { from: window.from, to: window.to },
+    summary: {
+      ciaTotal,
+      cashAtStationTotal,
+      ageingTotal,
+      depositedTotal,
+      pendingLiability,
+      clearedInWindow,
+      cashDifference,
+      difference: cashDifference,
+      shipmentCount,
+      pendingDriverCount: pendingDrivers.length,
+      limitedByRemittanceWindow,
+      alignedFromDate: alignedDates[0] ?? window.from,
+    },
+    ledger: [...ledgerByDate.values()].sort((a, b) => a.date.localeCompare(b.date)),
+    pendingDrivers,
+  };
 }
 
 /**
@@ -125,13 +313,18 @@ export function filterCashAtStationPackages(
 }
 
 /**
- * All CASH packages in the ageing pull for the date range (matches ageing Excel
- * export grand total — includes Delivered CASH rows, not only CIA / CAS).
+ * Excel cash ageing total: CIA + Cash At Station CASH, plus rare Delivered
+ * TR_CANCELLED CASH (successful Delivered CASH is excluded).
  */
 export function filterAgeingCashPackages(
   packages: AgeingPackageDetail[],
 ): AgeingPackageDetail[] {
-  return packages.filter((p) => isCashPackage(p));
+  return packages.filter((p) => {
+    if (!isCashPackage(p)) return false;
+    const kind = classifyReconState(p.state);
+    if (kind === 'pending' || kind === 'completed') return true;
+    return isExcelDeliveredCashEdge(p);
+  });
 }
 
 function emptySummary(
@@ -177,7 +370,7 @@ export function resolveAlignedFromDate(
   let lastDepositYmd: string | null = null;
   for (const r of activeRemittances) {
     if (r.creationDate >= fromStart) continue;
-    const ymd = ymdFromIstEpochMs(r.creationDate);
+    const ymd = businessYmdFromEpochMs(r.creationDate, startHourIst);
     if (!lastDepositYmd || ymd > lastDepositYmd) lastDepositYmd = ymd;
   }
   // Ageing + gap start on the deposit day itself (user: "from that day to toDate").
@@ -328,6 +521,7 @@ export async function reconcileCashInAssociate(args: {
     auth,
     toDate,
     CIA_AGEING_STATUSES,
+    startHourIst,
   );
   const ciaPackages = filterCashInAssociatePackages(packagesRaw);
   const cashAtStationPackages = filterCashAtStationPackages(packagesRaw);
@@ -358,7 +552,7 @@ export async function reconcileCashInAssociate(args: {
       provider,
       auth,
       CIA_REMITTANCE_DETAILS_CONCURRENCY,
-      { softFail: true },
+      { softFail: true, startHourIst },
     );
   }
 
@@ -370,11 +564,19 @@ export async function reconcileCashInAssociate(args: {
     windowRemittances,
     clearedByTracking,
     workforceByTransporterId,
+    startHourIst,
   });
 
-  const ciaTotal = round2(ledger.reduce((s, d) => s + d.expectedCashTotal, 0));
+  // Ledger expected was CIA-only (near-zero most days). Overlay Excel-style
+  // daily receivable = all CASH in CIA + Cash At Station for that calendar day.
+  const receivableByDay = cashReceivableByCalendarDay(ageingCashPackages);
+  for (const day of ledger) {
+    day.expectedCashTotal = receivableByDay.get(day.date) ?? 0;
+    day.shortAmount = round2(day.expectedCashTotal - day.remittanceTotalCash);
+  }
+
+  const ciaTotal = sumCashPackageRupees(ciaPackages);
   const cashAtStationTotal = sumCashPackageRupees(cashAtStationPackages);
-  // All CASH ageing in CIA + Cash At Station (not CIA-only).
   const ageingTotal = sumCashPackageRupees(ageingCashPackages);
   const depositedTotal = sumRemittanceCash(windowRemittances);
   const pendingLiability = round2(ledger.reduce((s, d) => s + d.stillPendingAmount, 0));

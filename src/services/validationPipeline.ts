@@ -51,13 +51,14 @@ export async function runValidationPipeline(
 
   const { stationCode, date, denomination, overrides = {} } = body;
   const auth = body.auth!;
-  const range = getBusinessDayRange(date, Number(env.BUSINESS_DAY_START_HOUR_IST ?? '0'));
+  const startHourIst = Number(env.BUSINESS_DAY_START_HOUR_IST ?? '5');
+  const range = getBusinessDayRange(date, startHourIst);
 
   const [rawReconciliation, ageingPackages, liabilitySummary, remittanceList] = await Promise.all([
     provider.getActiveDrivers(stationCode, auth).then((drivers) =>
       provider.getDriverReconciliation(stationCode, range, drivers, auth),
     ),
-    provider.getAgeingDrillDownData(stationCode, date, auth),
+    provider.getAgeingDrillDownData(stationCode, date, auth, undefined, undefined, startHourIst),
     provider.getStationLiabilitySummary(stationCode, range, auth),
     provider.getRemittances(stationCode, range, auth),
   ]);

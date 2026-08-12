@@ -8,7 +8,8 @@ import { createCiaSnapshotStore } from '../store/factory';
 import { createStationDataProvider } from '../providers/factory';
 import { ensureValidAmazonSession } from '../session/ensureSession';
 import { loadWorkforceRosterMap } from './workforceRoster';
-import { getCiaAnalysisWindow, reconcileCashInAssociate } from './cashInAssociate';
+import { getCiaAnalysisWindow, mergeCiaStationPayloads, reconcileCashInAssociate, splitYmdRange } from './cashInAssociate';
+import { CIA_REFRESH_CHUNK_DAYS } from '../config';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,15 +41,112 @@ function isFinishedSnapshot(status: string, error: string | null | undefined): b
   return !(status === 'error' && error === CIA_PROCESSING_MARKER);
 }
 
+/**
+ * Reconcile a multi-week window by self-fetching live-range chunks.
+ * Each chunk runs in a separate Worker isolate (fresh CPU budget) so large
+ * stations like ERSE do not hit Cloudflare Error 1102 on Free plan.
+ */
+async function reconcileViaLiveChunks(
+  env: Env,
+  stationCode: string,
+  fromDate: string,
+  toDate: string,
+): Promise<CiaStationPayload> {
+  const base = String(env.PUBLIC_WORKER_URL ?? '').trim().replace(/\/$/, '');
+  const adminKey = String(env.ADMIN_API_KEY ?? '').trim();
+  const chunks = splitYmdRange(fromDate, toDate, CIA_REFRESH_CHUNK_DAYS);
+
+  if (!base || !adminKey || chunks.length <= 1) {
+    const session = await ensureValidAmazonSession(env, {
+      stationCode,
+      triggeredBy: `cia-chunk-fallback:${stationCode}`,
+      notifyOnFailure: false,
+    });
+    if (!session.ok) {
+      throw new Error(session.error || `Amazon session failed (${session.code})`);
+    }
+    const provider = createStationDataProvider(env);
+    const roster = await loadWorkforceRosterMap(env, { accountKey: session.accountKey });
+    return reconcileCashInAssociate({
+      stationCode,
+      fromDate,
+      toDate,
+      startHourIst: Number(env.BUSINESS_DAY_START_HOUR_IST ?? '5') || 5,
+      provider,
+      auth: session.auth,
+      workforceByTransporterId: roster.byTransporterId,
+      alignDepositCycle: false,
+      includeRemittanceDetails: false,
+    });
+  }
+
+  const parts: CiaStationPayload[] = [];
+  for (const chunk of chunks) {
+    const url = new URL(`${base}/api/admin/executive/cash-in-associate`);
+    url.searchParams.set('stationCode', stationCode);
+    url.searchParams.set('fromDate', chunk.from);
+    url.searchParams.set('toDate', chunk.to);
+
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        'x-admin-key': adminKey,
+        Accept: 'application/json',
+      },
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      const htmlish = /^\s*</.test(text) || /Worker exceeded resource limits/i.test(text);
+      throw new Error(
+        htmlish
+          ? `CIA chunk ${chunk.from}→${chunk.to} hit Worker resource limits`
+          : `CIA chunk ${chunk.from}→${chunk.to} failed (${response.status}): ${text.slice(0, 240)}`,
+      );
+    }
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      throw new Error(`CIA chunk ${chunk.from}→${chunk.to} returned non-JSON`);
+    }
+    const summaryRaw = (body.summary && typeof body.summary === 'object'
+      ? body.summary
+      : {}) as CiaStationSummary;
+    const windowRaw = (body.window && typeof body.window === 'object'
+      ? body.window
+      : {}) as { from?: string; to?: string };
+    parts.push({
+      window: {
+        from: String(windowRaw.from ?? chunk.from),
+        to: String(windowRaw.to ?? chunk.to),
+      },
+      summary: summaryRaw,
+      ledger: Array.isArray(body.ledger) ? (body.ledger as CiaStationPayload['ledger']) : [],
+      pendingDrivers: Array.isArray(body.pendingDrivers)
+        ? (body.pendingDrivers as CiaStationPayload['pendingDrivers'])
+        : [],
+    });
+  }
+
+  return mergeCiaStationPayloads(parts, { from: fromDate, to: toDate });
+}
+
 async function fetchStationOnce(
   env: Env,
   stationCode: string,
   fromDate: string,
   toDate: string,
-  workforceByTransporterId: Awaited<ReturnType<typeof loadWorkforceRosterMap>>['byTransporterId'],
+  _workforceByTransporterId: Awaited<ReturnType<typeof loadWorkforceRosterMap>>['byTransporterId'],
   options?: { includeRemittanceDetails?: boolean },
 ): Promise<{ payload: CiaStationPayload; accountKey: string }> {
   const accountKey = portalAccountKeyForStation(stationCode);
+  // Prefer chunked self-fetch for Free-plan CPU limits. Interactive refresh and
+  // ticker both use this path when PUBLIC_WORKER_URL is set.
+  if (String(env.PUBLIC_WORKER_URL ?? '').trim()) {
+    const payload = await reconcileViaLiveChunks(env, stationCode, fromDate, toDate);
+    return { payload, accountKey };
+  }
+
   const session = await ensureValidAmazonSession(env, {
     stationCode,
     triggeredBy: `cia-snapshot:${stationCode}`,
@@ -59,7 +157,7 @@ async function fetchStationOnce(
   }
 
   const provider = createStationDataProvider(env);
-  const startHourIst = Number(env.BUSINESS_DAY_START_HOUR_IST ?? '0');
+  const startHourIst = Number(env.BUSINESS_DAY_START_HOUR_IST ?? '5') || 5;
   const payload = await reconcileCashInAssociate({
     stationCode,
     fromDate,
@@ -67,7 +165,7 @@ async function fetchStationOnce(
     startHourIst,
     provider,
     auth: session.auth,
-    workforceByTransporterId,
+    workforceByTransporterId: _workforceByTransporterId,
     includeRemittanceDetails: options?.includeRemittanceDetails ?? true,
   });
   return { payload, accountKey };
@@ -272,6 +370,75 @@ export async function startCiaSnapshotRun(
 }
 
 /**
+ * Persist a BFF-merged CIA payload for one station (no Amazon calls).
+ * Used when Ops Pulse refreshes via live-range chunks to avoid Error 1102.
+ */
+export async function saveCiaStationPayload(
+  env: Env,
+  stationCode: string,
+  payload: CiaStationPayload,
+): Promise<{ runId: string; snapshotStatus: 'ok' | 'error'; error?: string }> {
+  const code = stationCode.trim().toUpperCase();
+  if (!ALLOWED_STATIONS.has(code)) {
+    throw new Error(`Station ${code} is not allowed`);
+  }
+
+  const store = createCiaSnapshotStore(env);
+  const window = getCiaAnalysisWindow();
+  let run = await store.getLatestReadableRun();
+  if (!run || run.asOfDate !== window.asOfDate) {
+    const running = await store.getActiveRunningRun();
+    run = running && running.asOfDate === window.asOfDate ? running : null;
+  }
+  let createdOneOff = false;
+  if (!run) {
+    run = await store.createRun({
+      asOfDate: window.asOfDate,
+      windowFrom: window.fromDate,
+      windowTo: window.toDate,
+      stationsTotal: 1,
+    });
+    createdOneOff = true;
+  }
+
+  const accountKey = portalAccountKeyForStation(code);
+  const normalized: CiaStationPayload = {
+    window: {
+      from: payload.window?.from || run.windowFrom,
+      to: payload.window?.to || run.windowTo,
+    },
+    summary: payload.summary,
+    ledger: Array.isArray(payload.ledger) ? payload.ledger : [],
+    pendingDrivers: Array.isArray(payload.pendingDrivers) ? payload.pendingDrivers : [],
+  };
+
+  await store.upsertStationSnapshot({
+    runId: run.id,
+    stationCode: code,
+    accountKey,
+    status: 'ok',
+    summary: normalized.summary,
+    payload: normalized,
+  });
+
+  if (createdOneOff) {
+    await store.finalizeRun({
+      runId: run.id,
+      status: 'completed',
+      stationsOk: 1,
+      stationsFailed: 0,
+    });
+  } else if (run.status === 'running') {
+    const counters = await store.syncRunCountersFromSnapshots(run.id);
+    if (counters.finishedCount >= stationList().length && counters.inFlightCount === 0) {
+      await finalizeFromSnapshots(env, run.id, stationList().length);
+    }
+  }
+
+  return { runId: run.id, snapshotStatus: 'ok' };
+}
+
+/**
  * Re-fetch a single station. Attaches to today's readable run when present
  * (immediately visible via GET), else today's running run, else a one-off run.
  */
@@ -303,8 +470,7 @@ export async function refreshCiaStation(
   }
 
   const roster = await loadWorkforceRosterMap(env);
-  // Interactive single-station refresh skips remittance details to stay under
-  // Cloudflare Worker limits (Error 1102). Nightly ticker ticks still fetch them.
+  // Chunked via PUBLIC_WORKER_URL when set (fresh CPU per live-range chunk).
   const result = await fetchStationWithRetry(
     env,
     code,

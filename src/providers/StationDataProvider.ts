@@ -37,11 +37,9 @@ export interface StationDataProvider {
 
   /**
    * Ageing dashboard drill-down (`/os/getDrillDownData`).
-   * Dates are YYYY-MM-DD (IST calendar). The upstream fetch is UTC-padded;
-   * rows are kept only when lastUpdatedTime falls inside [fromDate, toDate].
-   * When `toDate` is omitted, fetches a single calendar day.
-   * Optional `statuses` overrides the default Delivered / Cash At Station /
-   * Cash With Associate set (e.g. CIA pipeline adds Received → DS -> Customer).
+   * Dates are YYYY-MM-DD IST calendar days of lastUpdatedTime (Excel pivot style).
+   * Pages at Amazon's ~1000-row cap until exhausted. Optional startHourIst is
+   * ignored for row filtering (kept for call-site compatibility).
    */
   getAgeingDrillDownData(
     stationCode: string,
@@ -49,6 +47,7 @@ export interface StationDataProvider {
     auth: AmazonAuthContext,
     toDate?: string,
     statuses?: AgeingStatusSelector[],
+    startHourIst?: number,
   ): Promise<AgeingPackageDetail[]>;
 
   getStationLiabilitySummary(stationCode: string, range: DateRange, auth: AmazonAuthContext): Promise<LiabilitySummary>;

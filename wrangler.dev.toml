@@ -11,6 +11,6 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 AMAZON_PROXY_BASE_URL = "https://www.amazonlogistics.eu"
-BUSINESS_DAY_START_HOUR_IST = "0"
+BUSINESS_DAY_START_HOUR_IST = "5"
 DATA_PROVIDER = "amazon"
 AMAZON_LOGIN_STATION_CODE = "TIRC"

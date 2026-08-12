@@ -12,6 +12,7 @@ import type {
 import type { DateRange } from '../utils/dateRange';
 import {
   addDaysYmd,
+  ageingCalendarYmd,
   getUtcCalendarRangeSeconds,
   getRemittancePortalFetchRange,
   getRemittanceFetchRange,
@@ -94,6 +95,8 @@ interface RawAgeingPackage {
   receivableAmount?: string | number | null;
   orderAmount?: string | number | null;
   state?: string | null;
+  reason?: string | null;
+  statusReason?: string | null;
   packageType?: string | null;
   lastScanBy?: string | null;
   lastUpdatedTime?: string | null;
@@ -112,26 +115,9 @@ function parseAmount(value: string | number | null | undefined): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-/** YYYY-MM-DD for ageing lastUpdatedTime, using IST for timezone-aware values. */
-function ageingUpdatedYmd(lastUpdatedTime: string | null | undefined): string | null {
-  if (!lastUpdatedTime) return null;
-  const trimmed = lastUpdatedTime.trim();
-  // Export / portal style without zone: `2026-08-04 00:59:52` — already IST wall clock.
-  const hasZone = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(trimmed) || /T.*[zZ]|T.*[+-]\d{2}/.test(trimmed);
-  if (!hasZone) {
-    const m = /^(\d{4}-\d{2}-\d{2})/.exec(trimmed);
-    if (m) return m[1]!;
-    const part = trimmed.split(/[\sT]/)[0];
-    return part && /^\d{4}-\d{2}-\d{2}$/.test(part) ? part : null;
-  }
-  // ISO with timezone — convert instant to IST calendar date.
-  const ms = Date.parse(trimmed);
-  if (Number.isFinite(ms)) return todayIstYmd(ms);
-  const m = /^(\d{4}-\d{2}-\d{2})/.exec(trimmed);
-  return m ? m[1]! : null;
-}
 
 function normaliseAgeingPackage(row: RawAgeingPackage): AgeingPackageDetail {
+  const reasonRaw = row.reason ?? row.statusReason ?? null;
   return {
     trackingId: row.trackingId ?? '',
     driverId: row.driverId ?? null,
@@ -145,6 +131,7 @@ function normaliseAgeingPackage(row: RawAgeingPackage): AgeingPackageDetail {
         ? null
         : parseAmount(row.orderAmount),
     state: row.state ?? null,
+    reason: reasonRaw ? String(reasonRaw).trim() : null,
     packageType: row.packageType ?? null,
     lastUpdatedTime: row.lastUpdatedTime ?? null,
     orderingOrderId: row.orderingOrderId ?? null,
@@ -319,9 +306,9 @@ export class AmazonLogisticsProvider implements StationDataProvider {
   }
 
   /**
-   * Ageing export-style fetch: one status per request, size 10000, paginate
-   * via startingIndex. Combining statuses without size defaults to ~1000 and
-   * drops cash rows.
+   * Ageing export-style fetch: one status per request, paginate via startingIndex.
+   * Amazon oculus caps each page around 1000 rows — requesting size=10000 and
+   * stopping when batch.length < 10000 drops everything after the first page.
    */
   async getAgeingDrillDownData(
     stationCode: string,
@@ -329,15 +316,16 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     auth: AmazonAuthContext,
     toDate?: string,
     statuses?: AgeingStatusSelector[],
+    _startHourIst = 5,
   ): Promise<AgeingPackageDetail[]> {
     const { resourcePath, processName, httpMethod } = AMAZON_RESOURCES.getAgeingDrillDownData;
     const endYmd = toDate ?? fromDate;
-    // Amazon lastUpdatedRange is UTC-oriented; pad ±2 calendar days so IST
-    // edge rows are present, then keep only lastUpdatedTime dates in range.
+    // Pad so IST/UTC edge rows are present, then keep by calendar lastUpdated date.
     const fetchFrom = addDaysYmd(fromDate, -2);
     const fetchTo = addDaysYmd(endYmd, 2);
     const lastUpdatedRange = getUtcCalendarRangeSeconds(fetchFrom, fetchTo);
-    const pageSize = 10000;
+    // Amazon portal default/max page size for getDrillDownData.
+    const pageSize = 1000;
     const filters = [
       {
         __type: 'TermFilter:http://internal.amazon.com/coral/com.amazon.oculusservice.model.filter/',
@@ -379,7 +367,7 @@ export class AmazonLogisticsProvider implements StationDataProvider {
 
     const requestedCode = stationCode.trim().toUpperCase();
     const today = todayIstYmd();
-    // Historical ranges end at yesterday — never keep today's lastUpdatedTime.
+    // Historical ranges end at yesterday — never keep today's calendar updates.
     const excludeTodayUpdates = endYmd < today;
     const byTrackingId = new Map<string, AgeingPackageDetail>();
     for (const row of pages.flat()) {
@@ -392,7 +380,8 @@ export class AmazonLogisticsProvider implements StationDataProvider {
         continue;
       }
 
-      const updatedYmd = ageingUpdatedYmd(row.lastUpdatedTime);
+      // Excel pivot uses calendar Last Updated date (not 5 AM ops cutoff).
+      const updatedYmd = ageingCalendarYmd(row.lastUpdatedTime);
       if (updatedYmd) {
         if (updatedYmd < fromDate || updatedYmd > endYmd) continue;
         if (excludeTodayUpdates && updatedYmd === today) continue;
@@ -420,8 +409,9 @@ export class AmazonLogisticsProvider implements StationDataProvider {
   ): Promise<AgeingPackageDetail[]> {
     const out: AgeingPackageDetail[] = [];
     let startingIndex = 0;
+    const maxPages = 50;
 
-    for (;;) {
+    for (let page = 0; page < maxPages; page++) {
       const data = await this.callProxy<
         {
           nodeId: string;
@@ -449,8 +439,9 @@ export class AmazonLogisticsProvider implements StationDataProvider {
 
       const batch = (data.packageResultList ?? []).map(normaliseAgeingPackage);
       out.push(...batch);
+      // Full page → more rows may exist. Short/empty page → done.
       if (batch.length < pageSize) break;
-      startingIndex += pageSize;
+      startingIndex += batch.length;
     }
 
     return out;

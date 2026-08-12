@@ -60,7 +60,7 @@ async function parseStationDate(
   }
 
   const date = body.date && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : todayIstYmd();
-  const range = getBusinessDayRange(date, Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '0'));
+  const range = getBusinessDayRange(date, Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '5'));
   const fresh =
     body.fresh === true || (c.req.query('fresh') ?? '').trim() === '1';
   return { stationCode, date, range, fresh };
@@ -155,7 +155,14 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
 
     const [rawReconciliation, ageingPackages, roster] = await Promise.all([
       provider.getDriverReconciliation(stationCode, range, drivers, session.auth),
-      provider.getAgeingDrillDownData(stationCode, date, session.auth),
+      provider.getAgeingDrillDownData(
+        stationCode,
+        date,
+        session.auth,
+        undefined,
+        undefined,
+        Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '5'),
+      ),
       loadWorkforceRosterMap(c.env),
     ]);
 
@@ -240,7 +247,7 @@ export async function liabilitySummaryExecutiveHandler(c: Context<{ Bindings: En
  */
 export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
   const { stationCode, date, range, fresh } = await parseStationDate(c);
-  const startHourIst = Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '0');
+  const startHourIst = Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '5');
 
   return respondCached(c, `exec:remittance:${stationCode}:${date}`, fresh, async () => {
     const session = await requireAmazonSessionOrThrow(
@@ -254,7 +261,7 @@ export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
     const [drivers, all, sameDayPackages, roster] = await Promise.all([
       provider.getActiveDrivers(stationCode, session.auth),
       provider.getRemittances(stationCode, range, session.auth),
-      provider.getAgeingDrillDownData(stationCode, date, session.auth),
+      provider.getAgeingDrillDownData(stationCode, date, session.auth, undefined, undefined, startHourIst),
       loadWorkforceRosterMap(c.env),
     ]);
 
@@ -364,7 +371,7 @@ export async function remittanceVerifyHandler(c: Context<{ Bindings: Env }>) {
     body.codPeriodTo && /^\d{4}-\d{2}-\d{2}$/.test(body.codPeriodTo)
       ? body.codPeriodTo
       : codPeriodFrom;
-  const range = getBusinessDayRange(date, Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '0'));
+  const range = getBusinessDayRange(date, Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '5'));
   const fresh =
     body.fresh === true || (c.req.query('fresh') ?? '').trim() === '1';
 
@@ -397,7 +404,7 @@ export async function remittanceVerifyHandler(c: Context<{ Bindings: Env }>) {
     const fetchAnchor = codPeriodFrom < date ? codPeriodFrom : date;
     const fetchRange = getBusinessDayRange(
       fetchAnchor,
-      Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '0'),
+      Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '5'),
     );
     const all = await provider.getRemittances(stationCode, fetchRange, session.auth);
     const result = verifyRemittanceEntry(

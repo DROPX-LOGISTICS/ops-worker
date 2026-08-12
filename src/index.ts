@@ -73,6 +73,20 @@ app.get('/api/admin/executive/cash-in-associate/network', ciaNetworkHandler);
 app.get('/api/admin/executive/cash-in-associate', ciaStationHandler);
 app.post('/api/admin/executive/cash-in-associate/refresh', ciaRefreshHandler);
 app.post('/api/admin/internal/cia-snapshot/continue', ciaContinueHandler);
+
+// Common mix-up: Ops Pulse BFF paths are on the Next.js app, not this Worker.
+app.all('/api/ops-pulse/*', (c) =>
+  c.json(
+    {
+      error: 'Not found on cash-recon-worker',
+      code: 'NOT_FOUND',
+      hint:
+        'Use /api/admin/executive/cash-in-associate?stationCode=&fromDate=&toDate= with header x-admin-key. '
+        + 'Browser calls should go through dropx-ops-pulse /api/ops-pulse/cod/cash-recon/*.',
+    },
+    404,
+  ),
+);
 app.get('/api/admin/credentials', getCredentialsHandler);
 app.put('/api/admin/credentials', upsertCredentialsHandler);
 app.get('/api/admin/notifications', listNotificationsHandler);

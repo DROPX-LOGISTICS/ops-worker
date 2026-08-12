@@ -16,8 +16,8 @@ const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
  * The window shape (endTime = startTime + 24h - 1ms) and the default
  * midnight-IST start were both reverse-derived from observed API traffic
  * (dateRange pairs such as startTime=1785349800000 / endTime=1785436200000).
- * If your ops team confirms a different cutover hour, change
- * BUSINESS_DAY_START_HOUR_IST in wrangler.toml — no code changes needed.
+ * Ops cutoff is 5:00 IST (cash/deposits before 5 AM belong to the previous
+ * day). Override with BUSINESS_DAY_START_HOUR_IST in wrangler.toml.
  */
 export function getBusinessDayRange(dateStr: string, startHourIst = 0): DateRange {
   const match = DATE_RE.exec(dateStr);
@@ -95,6 +95,82 @@ export function addDaysYmd(dateStr: string, days: number): string {
 /** IST calendar YYYY-MM-DD from an epoch-ms timestamp. */
 export function ymdFromIstEpochMs(ms: number): string {
   return todayIstYmd(ms);
+}
+
+/**
+ * Ops business date for an instant.
+ * Cash / deposits before `startHourIst` (default 5:00 IST) belong to the
+ * previous calendar day — stations often create the prior day's remittance
+ * after midnight, before ~4–5 AM.
+ */
+export function businessYmdFromEpochMs(ms: number, startHourIst = 5): string {
+  const ist = new Date(ms + IST_OFFSET_MINUTES * 60 * 1000);
+  const hour = ist.getUTCHours();
+  const calendar = todayIstYmd(ms);
+  if (hour < startHourIst) return addDaysYmd(calendar, -1);
+  return calendar;
+}
+
+const NAIVE_TS_RE =
+  /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?)?/;
+
+/**
+ * Parse ageing `lastUpdatedTime` to UTC epoch ms.
+ * Unzoned `YYYY-MM-DD HH:mm:ss` is IST wall clock (Amazon India export).
+ */
+export function parseAgeingUpdatedMs(lastUpdatedTime: string | null | undefined): number | null {
+  if (!lastUpdatedTime) return null;
+  const trimmed = lastUpdatedTime.trim();
+  if (!trimmed) return null;
+
+  const hasZone = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(trimmed) || /T.*[zZ]|T.*[+-]\d{2}/.test(trimmed);
+  if (hasZone) {
+    const ms = Date.parse(trimmed);
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  const m = NAIVE_TS_RE.exec(trimmed);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const hour = Number(m[4] ?? '0');
+  const minute = Number(m[5] ?? '0');
+  const second = Number(m[6] ?? '0');
+  return Date.UTC(year, month - 1, day, hour, minute, second) - IST_OFFSET_MINUTES * 60 * 1000;
+}
+
+/** Business YYYY-MM-DD for an ageing lastUpdatedTime string. */
+export function ageingBusinessYmd(
+  lastUpdatedTime: string | null | undefined,
+  startHourIst = 5,
+): string | null {
+  const ms = parseAgeingUpdatedMs(lastUpdatedTime);
+  if (ms == null) {
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(lastUpdatedTime ?? '').trim());
+    return m ? m[1]! : null;
+  }
+  return businessYmdFromEpochMs(ms, startHourIst);
+}
+
+/**
+ * Excel / Amazon ageing pivot date: IST calendar day of lastUpdatedTime
+ * (no 5 AM ops cutoff). Unzoned `YYYY-MM-DD …` uses the date prefix as-is.
+ */
+export function ageingCalendarYmd(lastUpdatedTime: string | null | undefined): string | null {
+  if (!lastUpdatedTime) return null;
+  const trimmed = lastUpdatedTime.trim();
+  const hasZone = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(trimmed) || /T.*[zZ]|T.*[+-]\d{2}/.test(trimmed);
+  if (!hasZone) {
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(trimmed);
+    if (m) return m[1]!;
+    const part = trimmed.split(/[\sT]/)[0];
+    return part && /^\d{4}-\d{2}-\d{2}$/.test(part) ? part : null;
+  }
+  const ms = Date.parse(trimmed);
+  if (Number.isFinite(ms)) return todayIstYmd(ms);
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(trimmed);
+  return m ? m[1]! : null;
 }
 
 export function minYmd(a: string, b: string): string {

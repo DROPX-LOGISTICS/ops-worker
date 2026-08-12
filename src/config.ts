@@ -67,6 +67,13 @@ export const AMAZON_RESOURCES = {
 /** Prior calendar days for Cash In Associate snapshots (excludes today). */
 export const CIA_LOOKBACK_DAYS = 31;
 
+/**
+ * Interactive / Free-plan reconcile chunk size (days). Full 31-day ERSE pulls
+ * hit Cloudflare Error 1102 in one isolate; each chunk is a separate Worker
+ * invocation with its own CPU budget.
+ */
+export const CIA_REFRESH_CHUNK_DAYS = 7;
+
 /** Max concurrent getRemittanceDetailsForExcel calls in CIA reconcile. */
 export const CIA_REMITTANCE_DETAILS_CONCURRENCY = 3;
 

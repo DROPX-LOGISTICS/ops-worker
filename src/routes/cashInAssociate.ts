@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import type { Env, CiaStationSummary } from '../types';
+import type { Env, CiaStationSummary, CiaStationPayload } from '../types';
 import { ALLOWED_STATIONS, API_CACHE_TTL_MS, CIA_PROCESSING_MARKER } from '../config';
 import { createCiaSnapshotStore, createApiResponseCacheStore } from '../store/factory';
 import { ValidationInputError } from '../errors';
@@ -13,6 +13,7 @@ import { reconcileCashInAssociate } from '../services/cashInAssociate';
 import {
   processCiaSnapshotTick,
   refreshCiaStation,
+  saveCiaStationPayload,
   startCiaSnapshotRun,
 } from '../services/ciaSnapshotRunner';
 
@@ -118,7 +119,7 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
           stationCode,
           fromDate: fromDateQuery,
           toDate: toDateQuery,
-          startHourIst: Number(c.env.BUSINESS_DAY_START_HOUR_IST || '0') || 0,
+          startHourIst: Number(c.env.BUSINESS_DAY_START_HOUR_IST || '5') || 5,
           provider,
           auth: ensured.auth,
           workforceByTransporterId: workforce.byTransporterId,
@@ -269,24 +270,41 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
 
 /**
  * POST /api/admin/executive/cash-in-associate/refresh
- * `stationCode` via query param or JSON body refreshes one station
- * synchronously. Omit to start/resume the full network snapshot; the
- * every-3-minutes ticker cron then processes one station per tick.
+ * - Body `{ stationCode, precomputedPayload }` → persist a payload built by the
+ *   BFF from live-range chunks (avoids Error 1102 on full-window sync).
+ * - Body `{ stationCode }` → sync refresh (chunked via PUBLIC_WORKER_URL when set).
+ * - Empty body → start/resume full network snapshot (ticker advances stations).
  */
 export async function ciaRefreshHandler(c: Context<{ Bindings: Env }>) {
   let stationCode = (c.req.query('stationCode') ?? '').trim().toUpperCase();
-  if (!stationCode) {
-    try {
-      const body = (await c.req.json()) as { stationCode?: string };
-      if (body?.stationCode?.trim()) stationCode = body.stationCode.trim().toUpperCase();
-    } catch {
-      /* empty body = full run */
+  let precomputedPayload: CiaStationPayload | null = null;
+  try {
+    const body = (await c.req.json()) as {
+      stationCode?: string;
+      precomputedPayload?: CiaStationPayload;
+    };
+    if (body?.stationCode?.trim()) stationCode = body.stationCode.trim().toUpperCase();
+    if (body?.precomputedPayload && typeof body.precomputedPayload === 'object') {
+      precomputedPayload = body.precomputedPayload;
     }
+  } catch {
+    /* empty body = full run */
   }
 
   if (stationCode) {
     if (!ALLOWED_STATIONS.has(stationCode)) {
       throw new ValidationInputError(`Station ${stationCode} is not allowed`);
+    }
+    if (precomputedPayload) {
+      const result = await saveCiaStationPayload(c.env, stationCode, precomputedPayload);
+      await invalidateCacheAll('cia:', createApiResponseCacheStore(c.env));
+      return c.json({
+        status: result.snapshotStatus === 'ok' ? 'ok' : 'error',
+        stationCode,
+        runId: result.runId,
+        snapshotStatus: result.snapshotStatus,
+        error: result.error ?? null,
+      });
     }
     const result = await refreshCiaStation(c.env, stationCode);
     await invalidateCacheAll('cia:', createApiResponseCacheStore(c.env));

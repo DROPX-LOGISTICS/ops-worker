@@ -41,6 +41,12 @@ export interface Env {
    */
   WORKFORCE_PORTAL_EMAIL?: string;
   WORKFORCE_PORTAL_PASSWORD?: string;
+  /**
+   * Public base URL of this Worker (no trailing slash), e.g.
+   * https://cash-recon-worker.withered-voice-1c40.workers.dev
+   * Used so CIA refresh/ticker can self-fetch date chunks (fresh CPU each call).
+   */
+  PUBLIC_WORKER_URL?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +151,8 @@ export interface AgeingPackageDetail {
   receivableAmount: number;
   orderAmount: number | null;
   state: string | null;
+  /** Ageing "Reason" column (e.g. TR_CANCELLED on some Delivered cash rows). */
+  reason: string | null;
   packageType: string | null;
   lastUpdatedTime: string | null;
   orderingOrderId: string | null;

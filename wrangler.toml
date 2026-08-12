@@ -18,9 +18,10 @@ browser = { binding = "BROWSER" }
 # Production / Default environment variables
 [vars]
 AMAZON_PROXY_BASE_URL = "https://www.amazonlogistics.eu"
-BUSINESS_DAY_START_HOUR_IST = "0"
+BUSINESS_DAY_START_HOUR_IST = "5"
 DATA_PROVIDER = "amazon"
 AMAZON_LOGIN_STATION_CODE = "TIRC"
+PUBLIC_WORKER_URL = "https://cash-recon-worker.withered-voice-1c40.workers.dev"
 # Optional: WORKFORCE_BASE_URL / WORKFORCE_COMPANY_ID (defaults in src/config.ts)
 
 # CIA snapshots: daily start at 06:00 IST (00:30 UTC) + 3-minute ticker that
@@ -46,9 +47,10 @@ browser = { binding = "BROWSER" }
 
 [env.staging.vars]
 AMAZON_PROXY_BASE_URL = "https://www.amazonlogistics.eu"
-BUSINESS_DAY_START_HOUR_IST = "0"
+BUSINESS_DAY_START_HOUR_IST = "5"
 DATA_PROVIDER = "amazon"
 AMAZON_LOGIN_STATION_CODE = "TIRC"
+PUBLIC_WORKER_URL = "https://cash-recon-worker.withered-voice-1c40.workers.dev"
 
 [env.staging.triggers]
 crons = ["30 0 * * *", "*/3 * * * *"]

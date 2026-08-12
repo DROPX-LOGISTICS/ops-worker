@@ -40,7 +40,7 @@ export async function liabilitySummaryHandler(c: Context<{ Bindings: Env }>) {
   }
 
   const date = body.date && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : todayIstYmd();
-  const range = getBusinessDayRange(date, Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '0'));
+  const range = getBusinessDayRange(date, Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '5'));
 
   const ensured = await ensureValidAmazonSession(c.env, {
     triggeredBy: `probe-liability:${stationCode}`,

@@ -17,12 +17,13 @@ import {
   AGEING_PENDING_LOOKBACK_DAYS,
   REMITTANCE_LOOKBACK_DAYS,
   addDaysYmd,
+  ageingCalendarYmd,
+  businessYmdFromEpochMs,
   daysBetweenYmd,
   getBusinessDayRange,
   maxYmd,
   minYmd,
   todayIstYmd,
-  ymdFromIstEpochMs,
 } from '../utils/dateRange';
 import { buildExpectedCashFromAgeing } from '../utils/expectedCash';
 import { approxEqual, round2 } from '../utils/number';
@@ -75,10 +76,11 @@ export async function buildClearedTrackingMap(
   provider: StationDataProvider,
   auth: AmazonAuthContext,
   concurrency = 8,
-  opts?: { softFail?: boolean },
+  opts?: { softFail?: boolean; startHourIst?: number },
 ): Promise<Map<string, ClearedTracking>> {
   const map = new Map<string, ClearedTracking>();
   const softFail = opts?.softFail === true;
+  const startHourIst = opts?.startHourIst ?? 5;
   const unique = [
     ...new Map(
       remittances
@@ -114,7 +116,7 @@ export async function buildClearedTrackingMap(
   }
 
   for (const { remittance, details } of detailsList) {
-    const clearedOnDate = ymdFromIstEpochMs(remittance.creationDate);
+    const clearedOnDate = businessYmdFromEpochMs(remittance.creationDate, startHourIst);
     for (const s of details.shipments) {
       const trackingId = (s.trackingId ?? '').trim();
       if (!trackingId || map.has(trackingId)) continue;
@@ -163,7 +165,7 @@ function resolveWindow(args: {
 
     if (later.length > 0) {
       mode = 'forwardDeposit';
-      const latestLater = ymdFromIstEpochMs(later[later.length - 1]!.creationDate);
+      const latestLater = businessYmdFromEpochMs(later[later.length - 1]!.creationDate, startHourIst);
       toDate = minYmd(latestLater, addDaysYmd(requestDate, AGEING_PENDING_LOOKBACK_DAYS));
     } else if (sameDayRemittance > sameDayExpected + REMITTANCE_CASH_TOLERANCE) {
       mode = 'backwardPileUp';
@@ -172,7 +174,7 @@ function resolveWindow(args: {
         .sort((a, b) => b.creationDate - a.creationDate);
       if (prior.length > 0) {
         fromDate = maxYmd(
-          ymdFromIstEpochMs(prior[0]!.creationDate),
+          businessYmdFromEpochMs(prior[0]!.creationDate, startHourIst),
           addDaysYmd(requestDate, -AGEING_PENDING_LOOKBACK_DAYS),
         );
       } else {
@@ -216,6 +218,7 @@ export function buildLedgerDays(args: {
   windowRemittances: RemittanceEntry[];
   clearedByTracking: Map<string, ClearedTracking>;
   workforceByTransporterId?: Map<string, WorkforceAssociate>;
+  startHourIst?: number;
 }): RemittanceLedgerDay[] {
   const {
     fromDate,
@@ -225,15 +228,14 @@ export function buildLedgerDays(args: {
     windowRemittances,
     clearedByTracking,
     workforceByTransporterId,
+    startHourIst = 5,
   } = args;
 
   const expectedByDay = new Map<string, ReturnType<typeof buildExpectedCashFromAgeing>>();
-  // Split packages by updateDate for per-day expected totals
+  // Split packages by calendar lastUpdated date (Excel pivot style).
   const packagesByDay = new Map<string, AgeingPackageDetail[]>();
   for (const pkg of packages) {
-    const day =
-      (pkg.lastUpdatedTime && /^(\d{4}-\d{2}-\d{2})/.exec(pkg.lastUpdatedTime.trim())?.[1]) ||
-      fromDate;
+    const day = ageingCalendarYmd(pkg.lastUpdatedTime) || fromDate;
     if (day < fromDate || day > toDate) continue;
     let list = packagesByDay.get(day);
     if (!list) {
@@ -256,7 +258,7 @@ export function buildLedgerDays(args: {
 
   const remittanceByDay = new Map<string, number>();
   for (const r of windowRemittances) {
-    const day = ymdFromIstEpochMs(r.creationDate);
+    const day = businessYmdFromEpochMs(r.creationDate, startHourIst);
     remittanceByDay.set(day, round2((remittanceByDay.get(day) ?? 0) + (r.actualAmount?.value ?? 0)));
   }
 
@@ -489,11 +491,12 @@ export async function reconcileRemittancePending(args: {
 
   const packages =
     fromDate === toDate
-      ? // reuse already-fetched same-day packages when possible via provider call
-        await provider.getAgeingDrillDownData(stationCode, fromDate, auth)
-      : await provider.getAgeingDrillDownData(stationCode, fromDate, auth, toDate);
+      ? await provider.getAgeingDrillDownData(stationCode, fromDate, auth, undefined, undefined, startHourIst)
+      : await provider.getAgeingDrillDownData(stationCode, fromDate, auth, toDate, undefined, startHourIst);
 
-  const clearedByTracking = await buildClearedTrackingMap(windowRemittances, provider, auth);
+  const clearedByTracking = await buildClearedTrackingMap(windowRemittances, provider, auth, 8, {
+    startHourIst,
+  });
 
   const ledger = buildLedgerDays({
     fromDate,
@@ -503,6 +506,7 @@ export async function reconcileRemittancePending(args: {
     windowRemittances,
     clearedByTracking,
     workforceByTransporterId,
+    startHourIst,
   });
 
   const finalPendingTotal = round2(
