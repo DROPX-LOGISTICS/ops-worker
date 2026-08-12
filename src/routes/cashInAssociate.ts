@@ -1,6 +1,6 @@
 import type { Context } from 'hono';
 import type { Env, CiaStationSummary, CiaStationPayload } from '../types';
-import { ALLOWED_STATIONS, API_CACHE_TTL_MS, CIA_PROCESSING_MARKER } from '../config';
+import { ALLOWED_STATIONS, API_CACHE_TTL_MS, CIA_LIVE_RANGE_CACHE_TTL_MS, CIA_PROCESSING_MARKER } from '../config';
 import { createCiaSnapshotStore, createApiResponseCacheStore } from '../store/factory';
 import { ValidationInputError } from '../errors';
 import { round2 } from '../utils/number';
@@ -89,19 +89,15 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
   }
 
   const shared = createApiResponseCacheStore(c.env);
-  const cacheKey = fromDateQuery && toDateQuery
+  const isLiveRange = Boolean(fromDateQuery && toDateQuery);
+  const cacheKey = isLiveRange
     ? `cia:station-live:${stationCode}:${fromDateQuery}:${toDateQuery}`
     : `cia:station:v2:${stationCode}:${asOfDateQuery || 'latest'}`;
   const { value, cacheHit } = await cachedJson<CiaReadResult>(
     cacheKey,
-    API_CACHE_TTL_MS,
+    isLiveRange ? CIA_LIVE_RANGE_CACHE_TTL_MS : API_CACHE_TTL_MS,
     async () => {
       const store = createCiaSnapshotStore(c.env);
-      const sinceDate = addDaysYmd(todayIstYmd(), -90);
-      const recentRuns = await store.listReadableRunsSince(sinceDate);
-      const availableReportDates = [...new Set(recentRuns.map((r) => r.asOfDate))].sort(
-        (a, b) => b.localeCompare(a),
-      );
 
       if (fromDateQuery && toDateQuery) {
         const ensured = await ensureValidAmazonSession(c.env, {
@@ -114,6 +110,7 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
         }
 
         const provider = createStationDataProvider(c.env);
+        // Roster from Supabase cache only — do not block live range on workforce refresh.
         const workforce = await loadWorkforceRosterMap(c.env, { accountKey: ensured.accountKey });
         const payload = await reconcileCashInAssociate({
           stationCode,
@@ -123,9 +120,7 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
           provider,
           auth: ensured.auth,
           workforceByTransporterId: workforce.byTransporterId,
-          // Exact UI range — do not shift to last deposit (must match Excel window).
           alignDepositCycle: false,
-          // Skip remittance line-item details on interactive live range (CF 1102).
           includeRemittanceDetails: false,
         });
 
@@ -144,11 +139,18 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
             summary: payload.summary,
             ledger: payload.ledger,
             pendingDrivers: payload.pendingDrivers,
-            availableReportDates,
+            // Skip listing 90 days of runs on the hot live path — empty is fine.
+            availableReportDates: [] as string[],
             mode: 'live_range',
           },
         };
       }
+
+      const sinceDate = addDaysYmd(todayIstYmd(), -90);
+      const recentRuns = await store.listReadableRunsSince(sinceDate);
+      const availableReportDates = [...new Set(recentRuns.map((r) => r.asOfDate))].sort(
+        (a, b) => b.localeCompare(a),
+      );
 
       const runPreferred = asOfDateQuery
         ? await store.getReadableRunByAsOfDate(asOfDateQuery)

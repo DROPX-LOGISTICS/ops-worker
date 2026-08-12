@@ -99,11 +99,11 @@ export const CIA_PROCESSING_MARKER = '__PROCESSING__';
 /** Reclaim in-flight station claims older than this (ms). */
 export const CIA_PROCESSING_STALE_MS = 4 * 60 * 1000;
 
-/**
- * TTL for read-API response caching (per-isolate). Identical requests within
- * this window share one upstream (Amazon/Supabase) round-trip.
- */
+/** TTL for read-API response caching (per-isolate). Identical requests within this window share one upstream round-trip. */
 export const API_CACHE_TTL_MS = 60_000;
+
+/** Longer TTL for expensive live CIA date-range reconciles (Amazon multi-page). */
+export const CIA_LIVE_RANGE_CACHE_TTL_MS = 5 * 60_000;
 
 /** Tolerance below which a monetary/count value is treated as zero. */
 export const AMOUNT_EPSILON = 0.01;

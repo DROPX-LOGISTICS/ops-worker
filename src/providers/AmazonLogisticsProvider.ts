@@ -13,7 +13,7 @@ import type { DateRange } from '../utils/dateRange';
 import {
   addDaysYmd,
   ageingCalendarYmd,
-  getUtcCalendarRangeSeconds,
+  getIstCalendarRangeSeconds,
   getRemittancePortalFetchRange,
   getRemittanceFetchRange,
   todayIstYmd,
@@ -320,10 +320,11 @@ export class AmazonLogisticsProvider implements StationDataProvider {
   ): Promise<AgeingPackageDetail[]> {
     const { resourcePath, processName, httpMethod } = AMAZON_RESOURCES.getAgeingDrillDownData;
     const endYmd = toDate ?? fromDate;
-    // Pad so IST/UTC edge rows are present, then keep by calendar lastUpdated date.
-    const fetchFrom = addDaysYmd(fromDate, -2);
-    const fetchTo = addDaysYmd(endYmd, 2);
-    const lastUpdatedRange = getUtcCalendarRangeSeconds(fetchFrom, fetchTo);
+    // Tight IST window (±1 day pad for edge timestamps). Old UTC±2 pad pulled
+    // many extra Delivered/CAS pages and dominated live-range latency.
+    const fetchFrom = addDaysYmd(fromDate, -1);
+    const fetchTo = addDaysYmd(endYmd, 1);
+    const lastUpdatedRange = getIstCalendarRangeSeconds(fetchFrom, fetchTo);
     // Amazon portal default/max page size for getDrillDownData.
     const pageSize = 1000;
     const filters = [
@@ -337,20 +338,17 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       },
     ];
 
-    // Match ageing CSV export: separate call per status (not one combined map).
-    // Sequential (not Promise.all) — keeps peak memory/CPU under CF Worker limits
-    // when large stations return multi-thousand-row payloads per status.
+    // One request per status. Parallel for the small CIA set (2 statuses).
     const statusList: AgeingStatusSelector[] =
       statuses && statuses.length > 0
         ? statuses
         : ['Delivered', 'Cash At Station', 'Cash With Associate'];
 
-    const pages: AgeingPackageDetail[][] = [];
-    for (const selector of statusList) {
-      const status = typeof selector === 'string' ? selector : selector.status;
-      const values = typeof selector === 'string' ? [] : selector.values;
-      pages.push(
-        await this.fetchAgeingStatusPages(
+    const pages = await Promise.all(
+      statusList.map((selector) => {
+        const status = typeof selector === 'string' ? selector : selector.status;
+        const values = typeof selector === 'string' ? [] : selector.values;
+        return this.fetchAgeingStatusPages(
           resourcePath,
           processName,
           httpMethod,
@@ -361,9 +359,9 @@ export class AmazonLogisticsProvider implements StationDataProvider {
           lastUpdatedRange,
           pageSize,
           auth,
-        ),
-      );
-    }
+        );
+      }),
+    );
 
     const requestedCode = stationCode.trim().toUpperCase();
     const today = todayIstYmd();

@@ -37,16 +37,14 @@ import {
 } from './remittancePending';
 
 /**
- * Excel / Amazon ageing pivot for CIA gap:
- * - Cash With Associate + Cash At Station (main)
- * - Delivered is fetched only so rare TR_CANCELLED CASH rows (e.g. ₹206) match
- *   Excel; normal Delivered CASH is excluded in filterAgeingCashPackages.
- * Do NOT add Received → DS->Customer.
+ * Excel / Amazon ageing pivot for CIA gap: Cash With Associate + Cash At Station.
+ * Delivered is intentionally omitted from the live pull — a full Delivered scan
+ * is ~10k rows / many pages (~2+ minutes) for at most a few TR_CANCELLED CASH
+ * edge cases (₹100s). filterAgeingCashPackages still accepts those if present.
  */
 export const CIA_AGEING_STATUSES: AgeingStatusSelector[] = [
   'Cash With Associate',
   'Cash At Station',
-  'Delivered',
 ];
 
 function isCashMethod(method: string | null | undefined): boolean {
@@ -495,34 +493,55 @@ export async function reconcileCashInAssociate(args: {
     includeRemittanceDetails = true,
   } = args;
 
-  // Fetch remittances first (including a lookback before fromDate) so we can
-  // align the ageing window to the last deposit cycle when needed.
+  // Fetch remittances + ageing together when we do not need remittances first
+  // for deposit-cycle alignment (live from/to). Halves wall time vs sequential.
   const remittanceLookupFrom = addDaysYmd(fromDate, -(REMITTANCE_LOOKBACK_DAYS - 1));
   const remittanceAnchors = getCiaRemittanceAnchors(remittanceLookupFrom, toDate);
-  const remittanceBatches = await Promise.all(
-    remittanceAnchors.map((anchor) =>
-      fetchRemittancesAtAnchor(provider, stationCode, anchor, startHourIst, auth),
-    ),
-  );
+
+  const fetchRemittances = () =>
+    Promise.all(
+      remittanceAnchors.map((anchor) =>
+        fetchRemittancesAtAnchor(provider, stationCode, anchor, startHourIst, auth),
+      ),
+    );
+
+  const fetchAgeing = (ageingFrom: string) =>
+    provider.getAgeingDrillDownData(
+      stationCode,
+      ageingFrom,
+      auth,
+      toDate,
+      CIA_AGEING_STATUSES,
+      startHourIst,
+    );
+
+  let remittanceBatches: RemittanceEntry[][];
+  let packagesRaw: AgeingPackageDetail[];
+  let alignedFrom = fromDate;
+
+  if (alignDepositCycle) {
+    remittanceBatches = await fetchRemittances();
+    const allRemittancesEarly = dedupeRemittances(remittanceBatches.flat());
+    const activeEarly = allRemittancesEarly.filter((r) => {
+      const s = (r.status ?? '').toUpperCase();
+      return s === 'CREATED' || s === 'SUBMITTED';
+    });
+    alignedFrom = resolveAlignedFromDate(fromDate, activeEarly, startHourIst);
+    packagesRaw = await fetchAgeing(alignedFrom);
+  } else {
+    const [batches, ageing] = await Promise.all([fetchRemittances(), fetchAgeing(fromDate)]);
+    remittanceBatches = batches;
+    packagesRaw = ageing;
+  }
 
   const allRemittances = dedupeRemittances(remittanceBatches.flat());
   const active = allRemittances.filter((r) => {
     const s = (r.status ?? '').toUpperCase();
     return s === 'CREATED' || s === 'SUBMITTED';
   });
-
-  const alignedFrom = alignDepositCycle
-    ? resolveAlignedFromDate(fromDate, active, startHourIst)
-    : fromDate;
-
-  const packagesRaw = await provider.getAgeingDrillDownData(
-    stationCode,
-    alignedFrom,
-    auth,
-    toDate,
-    CIA_AGEING_STATUSES,
-    startHourIst,
-  );
+  if (alignDepositCycle) {
+    alignedFrom = resolveAlignedFromDate(fromDate, active, startHourIst);
+  }
   const ciaPackages = filterCashInAssociatePackages(packagesRaw);
   const cashAtStationPackages = filterCashAtStationPackages(packagesRaw);
   const ageingCashPackages = filterAgeingCashPackages(packagesRaw);
