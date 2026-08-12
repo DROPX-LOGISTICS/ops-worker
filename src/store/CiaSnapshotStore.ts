@@ -522,4 +522,33 @@ export class CiaSnapshotStore {
     const all = await this.listStationSnapshots(runId);
     return all.filter((s) => !isProcessingSnapshot(s));
   }
+
+  /**
+   * Latest finished snapshot for one station across any run (newest fetched_at).
+   * Used when the preferred network run does not yet include this station.
+   */
+  async getLatestFinishedStationSnapshot(
+    stationCode: string,
+  ): Promise<{ snap: CiaStationSnapshot; run: CiaSnapshotRun | null } | null> {
+    const { data, error } = await this.client
+      .from('cia_station_snapshots')
+      .select('*')
+      .eq('station_code', stationCode)
+      .eq('status', 'ok')
+      .order('fetched_at', { ascending: false })
+      .limit(8);
+
+    if (error) {
+      console.error('CiaSnapshotStore.getLatestFinishedStationSnapshot failed', error);
+      return null;
+    }
+
+    const rows = ((data as StationRow[] | null) ?? [])
+      .map(toStation)
+      .filter((s) => !isProcessingSnapshot(s));
+    const snap = rows[0];
+    if (!snap) return null;
+    const run = await this.getRun(snap.runId);
+    return { snap, run };
+  }
 }

@@ -91,7 +91,7 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
   const shared = createApiResponseCacheStore(c.env);
   const cacheKey = fromDateQuery && toDateQuery
     ? `cia:station-live:${stationCode}:${fromDateQuery}:${toDateQuery}`
-    : `cia:station:${stationCode}:${asOfDateQuery || 'latest'}`;
+    : `cia:station:v2:${stationCode}:${asOfDateQuery || 'latest'}`;
   const { value, cacheHit } = await cachedJson<CiaReadResult>(
     cacheKey,
     API_CACHE_TTL_MS,
@@ -150,53 +150,58 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
         };
       }
 
-      const run = asOfDateQuery
+      const runPreferred = asOfDateQuery
         ? await store.getReadableRunByAsOfDate(asOfDateQuery)
-        : await store.getLatestReadableRun();
+        : (await store.resolveNetworkRun(ALLOWED_STATIONS.size)).run;
 
-      if (!run) {
-        return {
-          kind: 'not_found',
-          body: {
-            status: 'not_found',
-            code: asOfDateQuery ? 'NO_CIA_SNAPSHOT_FOR_DATE' : 'NO_CIA_SNAPSHOT',
-            message: asOfDateQuery
-              ? `No Cash In Associate report saved for ${asOfDateQuery}. Try another date or refresh this station.`
-              : 'No Cash In Associate snapshot yet. Wait for the 06:00 IST cron or POST refresh.',
-            availableReportDates,
-          },
-        };
+      let run = runPreferred;
+      let snap = run ? await store.getStationSnapshot(run.id, stationCode) : null;
+      if (snap && snap.error === CIA_PROCESSING_MARKER) snap = null;
+
+      // Prefer the same network run the Stations page uses. If this station is
+      // missing there (new sparse/running day), fall back to its latest OK snap.
+      if (!snap && !asOfDateQuery) {
+        const latest = await store.getLatestFinishedStationSnapshot(stationCode);
+        if (latest) {
+          snap = latest.snap;
+          run = latest.run ?? run;
+        }
       }
 
-      const snap = await store.getStationSnapshot(run.id, stationCode);
-      if (!snap || snap.error === CIA_PROCESSING_MARKER) {
+      if (!snap) {
         return {
           kind: 'not_found',
           body: {
             status: 'not_found',
             code: 'STATION_NOT_IN_SNAPSHOT',
-            message: `Station ${stationCode} is not in the report saved for ${run.asOfDate}.`,
-            run: { id: run.id, asOfDate: run.asOfDate, status: run.status },
+            message: asOfDateQuery
+              ? `Station ${stationCode} is not in the report saved for ${asOfDateQuery}.`
+              : `No saved Cash In Associate data for ${stationCode} yet. Refresh this station or wait for the network run.`,
+            run: run ? { id: run.id, asOfDate: run.asOfDate, status: run.status } : null,
             availableReportDates,
           },
         };
       }
 
+      const windowFrom = run?.windowFrom || snap.payload.window?.from || '';
+      const windowTo = run?.windowTo || snap.payload.window?.to || '';
+      const asOfDate = run?.asOfDate || windowTo || '';
+
       return {
         kind: 'ok',
         body: {
           status: 'ok',
-          asOfDate: run.asOfDate,
-          window: { from: run.windowFrom, to: run.windowTo },
-          runStatus: run.status,
-          runId: run.id,
+          asOfDate,
+          window: { from: windowFrom, to: windowTo },
+          runStatus: run?.status ?? null,
+          runId: run?.id ?? snap.runId,
           stationCode: snap.stationCode,
           snapshotStatus: snap.status,
           error: snap.error,
           fetchedAt: snap.fetchedAt,
           summary: snap.summary,
-          ledger: snap.payload.ledger,
-          pendingDrivers: snap.payload.pendingDrivers,
+          ledger: snap.payload.ledger ?? [],
+          pendingDrivers: snap.payload.pendingDrivers ?? [],
           availableReportDates,
         },
       };
