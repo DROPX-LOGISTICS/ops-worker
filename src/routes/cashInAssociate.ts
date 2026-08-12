@@ -264,13 +264,20 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
       const progressCounters = progress
         ? await store.syncRunCountersFromSnapshots(progress.id)
         : null;
+      const refreshActive = Boolean(progress && progress.status === 'running');
+      // During refresh, show the target report date (yesterday IST) from the
+      // in-progress run — not the older fullest completed run still backing most rows.
+      const displayRun =
+        refreshActive && progress!.asOfDate.localeCompare(run.asOfDate) >= 0
+          ? progress!
+          : run;
 
       return {
         kind: 'ok',
         body: {
           status: 'ok',
-          asOfDate: run.asOfDate,
-          window: { from: run.windowFrom, to: run.windowTo },
+          asOfDate: displayRun.asOfDate,
+          window: { from: displayRun.windowFrom, to: displayRun.windowTo },
           runSource: source,
           run: {
             id: run.id,
@@ -285,6 +292,10 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
             ? {
                 id: progress.id,
                 status: progress.status,
+                asOfDate: progress.asOfDate,
+                windowFrom: progress.windowFrom,
+                windowTo: progress.windowTo,
+                startedAt: progress.startedAt,
                 stationsTotal: Math.max(progress.stationsTotal, ALLOWED_STATIONS.size),
                 stationsOk: progressCounters?.stationsOk ?? progress.stationsOk,
                 stationsFailed: progressCounters?.stationsFailed ?? progress.stationsFailed,
