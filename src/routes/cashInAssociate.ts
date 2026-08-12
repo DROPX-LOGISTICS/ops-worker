@@ -1,6 +1,12 @@
 import type { Context } from 'hono';
 import type { Env, CiaStationSummary, CiaStationPayload } from '../types';
-import { ALLOWED_STATIONS, API_CACHE_TTL_MS, CIA_LIVE_RANGE_CACHE_TTL_MS, CIA_PROCESSING_MARKER } from '../config';
+import {
+  ALLOWED_STATIONS,
+  API_CACHE_TTL_MS,
+  CIA_LIVE_RANGE_CACHE_TTL_MS,
+  CIA_PROCESSING_MARKER,
+  CIA_RETRY_PENDING_MARKER,
+} from '../config';
 import { createCiaSnapshotStore, createApiResponseCacheStore } from '../store/factory';
 import { ValidationInputError } from '../errors';
 import { round2 } from '../utils/number';
@@ -158,7 +164,9 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
 
       let run = runPreferred;
       let snap = run ? await store.getStationSnapshot(run.id, stationCode) : null;
-      if (snap && snap.error === CIA_PROCESSING_MARKER) snap = null;
+      if (snap && (snap.error === CIA_PROCESSING_MARKER || snap.error === CIA_RETRY_PENDING_MARKER)) {
+        snap = null;
+      }
 
       // Prefer the same network run the Stations page uses. If this station is
       // missing there (new sparse/running day), fall back to its latest OK snap.

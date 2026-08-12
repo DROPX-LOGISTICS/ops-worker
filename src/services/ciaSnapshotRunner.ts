@@ -2,6 +2,7 @@ import type { Env, CiaStationPayload, CiaStationSummary, CiaSnapshotRun } from '
 import {
   ALLOWED_STATIONS,
   CIA_PROCESSING_MARKER,
+  CIA_RETRY_PENDING_MARKER,
   portalAccountKeyForStation,
 } from '../config';
 import { createCiaSnapshotStore } from '../store/factory';
@@ -38,7 +39,14 @@ function stationList(): string[] {
 }
 
 function isFinishedSnapshot(status: string, error: string | null | undefined): boolean {
-  return !(status === 'error' && error === CIA_PROCESSING_MARKER);
+  return !(
+    status === 'error'
+    && (error === CIA_PROCESSING_MARKER || error === CIA_RETRY_PENDING_MARKER)
+  );
+}
+
+function isRetryPendingSnapshot(status: string, error: string | null | undefined): boolean {
+  return status === 'error' && error === CIA_RETRY_PENDING_MARKER;
 }
 
 /**
@@ -227,9 +235,17 @@ export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<
   const nextStation =
     stations.find((code) => {
       const snap = byCode.get(code);
-      if (!snap) return true;
-      return !isFinishedSnapshot(snap.status, snap.error);
-    }) ?? null;
+      return !snap;
+    })
+    ?? stations.find((code) => {
+      const snap = byCode.get(code);
+      return Boolean(snap && snap.status === 'error' && snap.error === CIA_PROCESSING_MARKER);
+    })
+    ?? stations.find((code) => {
+      const snap = byCode.get(code);
+      return Boolean(snap && isRetryPendingSnapshot(snap.status, snap.error));
+    })
+    ?? null;
 
   if (!nextStation) {
     await finalizeFromSnapshots(env, run.id, stations.length);
@@ -258,6 +274,9 @@ export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<
     roster.byTransporterId,
   );
 
+  const prior = byCode.get(nextStation);
+  const wasRetry = Boolean(prior && isRetryPendingSnapshot(prior.status, prior.error));
+
   if (result.ok) {
     await store.upsertStationSnapshot({
       runId: run.id,
@@ -274,7 +293,7 @@ export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<
       stationCode: nextStation,
       accountKey: result.accountKey,
       status: 'error',
-      error: result.error,
+      error: wasRetry ? result.error : CIA_RETRY_PENDING_MARKER,
       summary: payload.summary,
       payload,
     });

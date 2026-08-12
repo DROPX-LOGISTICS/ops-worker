@@ -96,6 +96,12 @@ export const CIA_REMITTANCE_FETCH_COUNT = 3;
  */
 export const CIA_PROCESSING_MARKER = '__PROCESSING__';
 
+/**
+ * Marker written after a station fails its first fetch. These stations are
+ * retried once after all untouched stations have had their turn.
+ */
+export const CIA_RETRY_PENDING_MARKER = '__RETRY_PENDING__';
+
 /** Reclaim in-flight station claims older than this (ms). */
 export const CIA_PROCESSING_STALE_MS = 4 * 60 * 1000;
 
