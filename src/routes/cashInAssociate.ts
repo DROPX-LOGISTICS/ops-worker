@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import type { Env, CiaStationSummary, CiaStationPayload, CiaSnapshotRun } from '../types';
+import type { Env, CiaStationSummary, CiaStationPayload, CiaSnapshotRun, CiaStationSnapshot } from '../types';
 import {
   ALLOWED_STATIONS,
   API_CACHE_TTL_MS,
@@ -84,6 +84,48 @@ function isValidYmd(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
+function isUsableStationSnap(snap: CiaStationSnapshot | null): snap is CiaStationSnapshot {
+  if (!snap) return false;
+  if (snap.error === CIA_PROCESSING_MARKER || snap.error === CIA_RETRY_PENDING_MARKER) return false;
+  return true;
+}
+
+/**
+ * Same overlay as the network list: in-progress refresh snapshots win over the
+ * older completed base run, so station drill-down matches the Stations table.
+ */
+async function resolveStationRead(
+  store: ReturnType<typeof createCiaSnapshotStore>,
+  stationCode: string,
+  asOfDateQuery: string,
+): Promise<{ run: CiaSnapshotRun | null; snap: CiaStationSnapshot | null }> {
+  if (asOfDateQuery) {
+    const run = await store.getReadableRunByAsOfDate(asOfDateQuery);
+    const snap = run ? await store.getStationSnapshot(run.id, stationCode) : null;
+    return { run, snap: isUsableStationSnap(snap) ? snap : null };
+  }
+
+  const { run, progress } = await store.resolveNetworkRun(ALLOWED_STATIONS.size);
+  const progressSnap = progress
+    ? await store.getStationSnapshot(progress.id, stationCode)
+    : null;
+  if (isUsableStationSnap(progressSnap)) {
+    return { run: progress ?? run, snap: progressSnap };
+  }
+
+  const baseSnap = run ? await store.getStationSnapshot(run.id, stationCode) : null;
+  if (isUsableStationSnap(baseSnap)) {
+    return { run, snap: baseSnap };
+  }
+
+  const latest = await store.getLatestFinishedStationSnapshot(stationCode);
+  if (latest) {
+    return { run: latest.run ?? run, snap: latest.snap };
+  }
+
+  return { run, snap: null };
+}
+
 /**
  * GET /api/admin/executive/cash-in-associate?stationCode=KTUO
  * Optional `asOfDate=YYYY-MM-DD` loads that day's saved report (default: latest).
@@ -124,7 +166,7 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
   const isLiveRange = Boolean(fromDateQuery && toDateQuery);
   const cacheKey = isLiveRange
     ? `cia:station-live:${stationCode}:${fromDateQuery}:${toDateQuery}`
-    : `cia:station:v2:${stationCode}:${asOfDateQuery || 'latest'}`;
+    : `cia:station:v3:${stationCode}:${asOfDateQuery || 'latest'}`;
   const { value, cacheHit } = await cachedJson<CiaReadResult>(
     cacheKey,
     isLiveRange ? CIA_LIVE_RANGE_CACHE_TTL_MS : API_CACHE_TTL_MS,
@@ -184,25 +226,7 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
         (a, b) => b.localeCompare(a),
       );
 
-      const runPreferred = asOfDateQuery
-        ? await store.getReadableRunByAsOfDate(asOfDateQuery)
-        : (await store.resolveNetworkRun(ALLOWED_STATIONS.size)).run;
-
-      let run = runPreferred;
-      let snap = run ? await store.getStationSnapshot(run.id, stationCode) : null;
-      if (snap && (snap.error === CIA_PROCESSING_MARKER || snap.error === CIA_RETRY_PENDING_MARKER)) {
-        snap = null;
-      }
-
-      // Prefer the same network run the Stations page uses. If this station is
-      // missing there (new sparse/running day), fall back to its latest OK snap.
-      if (!snap && !asOfDateQuery) {
-        const latest = await store.getLatestFinishedStationSnapshot(stationCode);
-        if (latest) {
-          snap = latest.snap;
-          run = latest.run ?? run;
-        }
-      }
+      const { run, snap } = await resolveStationRead(store, stationCode, asOfDateQuery);
 
       if (!snap) {
         return {
@@ -258,7 +282,7 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
 export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
   const shared = createApiResponseCacheStore(c.env);
   const { value, cacheHit } = await cachedJson<CiaReadResult>(
-    'cia:network:v3',
+    'cia:network:v4',
     API_CACHE_TTL_MS,
     async () => {
       const store = createCiaSnapshotStore(c.env);
