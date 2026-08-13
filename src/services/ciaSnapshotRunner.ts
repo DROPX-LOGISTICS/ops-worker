@@ -347,17 +347,21 @@ async function finalizeFromSnapshots(
 /**
  * Start a new daily snapshot run (or resume a same-day running one).
  * A running run from an older day is finalized as failed and superseded.
+ * Pass `forceNew: true` for manual "Refresh all" so a stuck same-day run
+ * (retry queue / failed stations) is superseded and progress resets to 0/N.
  * New runs force-sync the workforce roster (ACTIVE+INACTIVE+OFFBOARDED) once;
  * station processing happens on subsequent ticker-cron invocations.
  */
 export async function startCiaSnapshotRun(
   env: Env,
+  options?: { forceNew?: boolean },
 ): Promise<{ run: CiaSnapshotRun; resumed: boolean }> {
   const store = createCiaSnapshotStore(env);
   const window = getCiaAnalysisWindow();
+  const forceNew = Boolean(options?.forceNew);
   const existing = await store.getActiveRunningRun();
   if (existing) {
-    if (existing.asOfDate === window.asOfDate) {
+    if (existing.asOfDate === window.asOfDate && !forceNew) {
       // Heal counters / pick up any stations skipped by a killed tick.
       const counters = await store.syncRunCountersFromSnapshots(existing.id);
       if (counters.finishedCount >= stationList().length && counters.inFlightCount === 0) {
@@ -365,12 +369,15 @@ export async function startCiaSnapshotRun(
       }
       return { run: (await store.getRun(existing.id)) ?? existing, resumed: true };
     }
+    const counters = await store.syncRunCountersFromSnapshots(existing.id);
     await store.finalizeRun({
       runId: existing.id,
       status: 'failed',
-      stationsOk: existing.stationsOk,
-      stationsFailed: existing.stationsFailed,
-      error: 'Superseded by a newer run',
+      stationsOk: counters.stationsOk,
+      stationsFailed: counters.stationsFailed + counters.retryQueuedCount + counters.processingCount,
+      error: forceNew
+        ? 'Superseded by manual Refresh all'
+        : 'Superseded by a newer run',
     });
   }
 

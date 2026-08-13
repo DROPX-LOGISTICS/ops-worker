@@ -232,7 +232,7 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
 export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
   const shared = createApiResponseCacheStore(c.env);
   const { value, cacheHit } = await cachedJson<CiaReadResult>(
-    'cia:network',
+    'cia:network:v3',
     API_CACHE_TTL_MS,
     async () => {
       const store = createCiaSnapshotStore(c.env);
@@ -519,7 +519,9 @@ export async function ciaRefreshHandler(c: Context<{ Bindings: Env }>) {
     });
   }
 
-  const { run, resumed } = await startCiaSnapshotRun(c.env);
+  // Manual Refresh all always starts a clean run so the UI resets from the
+  // previous retry/fail queue (e.g. 38/38 with 0 ok) instead of resuming it.
+  const { run, resumed } = await startCiaSnapshotRun(c.env, { forceNew: true });
   // Advance one station immediately so "Refresh all" is not stuck at 0/N while
   // waiting for the */3 cron (or when that cron is delayed / not firing).
   let tick: Awaited<ReturnType<typeof processCiaSnapshotTick>> | null = null;
@@ -529,7 +531,14 @@ export async function ciaRefreshHandler(c: Context<{ Bindings: Env }>) {
     console.error('CIA refresh first-station kick failed', err);
   }
   await invalidateCacheAll('cia:', createApiResponseCacheStore(c.env));
-  const latest = tick?.run ?? (await createCiaSnapshotStore(c.env).getRun(run.id)) ?? run;
+  const store = createCiaSnapshotStore(c.env);
+  const latest = tick?.run ?? (await store.getRun(run.id)) ?? run;
+  const counters = await store.syncRunCountersFromSnapshots(latest.id);
+  const attempted =
+    counters.stationsOk
+    + counters.stationsFailed
+    + counters.retryQueuedCount
+    + counters.processingCount;
 
   return c.json({
     status: 'accepted',
@@ -537,11 +546,24 @@ export async function ciaRefreshHandler(c: Context<{ Bindings: Env }>) {
     run: latest,
     processedStation: tick?.processedStation ?? null,
     done: tick?.done ?? false,
+    refreshProgress: {
+      id: latest.id,
+      status: latest.status,
+      asOfDate: latest.asOfDate,
+      windowFrom: latest.windowFrom,
+      windowTo: latest.windowTo,
+      startedAt: latest.startedAt,
+      stationsTotal: Math.max(latest.stationsTotal, ALLOWED_STATIONS.size),
+      stationsOk: attempted,
+      stationsSucceeded: counters.stationsOk,
+      stationsFailed: counters.stationsFailed,
+      stationsRetryQueued: counters.retryQueuedCount,
+      stationsProcessing: counters.processingCount,
+    },
     message: tick?.processedStation
-      ? `Snapshot run ${resumed ? 'resumed' : 'started'}; processed ${tick.processedStation}. `
+      ? `Fresh snapshot run started; processed ${tick.processedStation} (${attempted}/${Math.max(latest.stationsTotal, ALLOWED_STATIONS.size)}). `
         + 'Ticker continues about every 3 minutes, or click Update numbers to advance one station.'
-      : 'Snapshot run started. The ticker cron processes one station every ~3 minutes; '
-        + 'click Update numbers to advance manually if progress stays at 0.',
+      : 'Fresh snapshot run started. Click Update numbers to fetch the first station if progress stays at 0.',
   });
 }
 
@@ -561,11 +583,38 @@ export async function ciaContinueHandler(c: Context<{ Bindings: Env }>) {
 
   const tick = await processCiaSnapshotTick(c.env, runId);
   await invalidateCacheAll('cia:', createApiResponseCacheStore(c.env));
+  const store = createCiaSnapshotStore(c.env);
+  const latest = tick.run;
+  const counters = latest
+    ? await store.syncRunCountersFromSnapshots(latest.id)
+    : null;
+  const attempted = counters
+    ? counters.stationsOk
+      + counters.stationsFailed
+      + counters.retryQueuedCount
+      + counters.processingCount
+    : 0;
 
   return c.json({
     status: 'ok',
     processedStation: tick.processedStation,
     done: tick.done,
     run: tick.run,
+    refreshProgress: latest && counters
+      ? {
+          id: latest.id,
+          status: latest.status,
+          asOfDate: latest.asOfDate,
+          windowFrom: latest.windowFrom,
+          windowTo: latest.windowTo,
+          startedAt: latest.startedAt,
+          stationsTotal: Math.max(latest.stationsTotal, ALLOWED_STATIONS.size),
+          stationsOk: attempted,
+          stationsSucceeded: counters.stationsOk,
+          stationsFailed: counters.stationsFailed,
+          stationsRetryQueued: counters.retryQueuedCount,
+          stationsProcessing: counters.processingCount,
+        }
+      : null,
   });
 }
