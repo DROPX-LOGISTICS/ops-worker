@@ -401,14 +401,24 @@ export class CiaSnapshotStore {
     stationsFailed: number;
     finishedCount: number;
     inFlightCount: number;
+    retryQueuedCount: number;
+    processingCount: number;
   }> {
     const snaps = await this.listStationSnapshots(runId);
     let stationsOk = 0;
     let stationsFailed = 0;
     let inFlightCount = 0;
+    let retryQueuedCount = 0;
+    let processingCount = 0;
     for (const s of snaps) {
-      if (isProcessingSnapshot(s) || isRetryPendingSnapshot(s)) {
+      if (isProcessingSnapshot(s)) {
         inFlightCount += 1;
+        processingCount += 1;
+        continue;
+      }
+      if (isRetryPendingSnapshot(s)) {
+        inFlightCount += 1;
+        retryQueuedCount += 1;
         continue;
       }
       if (s.status === 'ok') stationsOk += 1;
@@ -423,7 +433,14 @@ export class CiaSnapshotStore {
         next_station_index: finishedCount + inFlightCount,
       })
       .eq('id', runId);
-    return { stationsOk, stationsFailed, finishedCount, inFlightCount };
+    return {
+      stationsOk,
+      stationsFailed,
+      finishedCount,
+      inFlightCount,
+      retryQueuedCount,
+      processingCount,
+    };
   }
 
   async incrementRunCounters(args: {

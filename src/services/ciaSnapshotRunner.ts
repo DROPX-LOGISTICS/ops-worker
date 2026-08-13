@@ -530,13 +530,30 @@ export async function refreshCiaStation(
   return { runId: run.id, snapshotStatus: 'error', error: result.error };
 }
 
-/** Daily cron (06:00 IST): start/resume the run; ticks do the station work. */
+/** Daily cron (06:00 IST): start/resume the run, then process the first station immediately. */
 export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
   const { run } = await startCiaSnapshotRun(env);
-  return run;
+  // Do not wait for the next */3 ticker — kick the first station now so a stuck
+  // or delayed cron trigger cannot leave the run at 0/N all morning.
+  try {
+    const tick = await processCiaSnapshotTick(env, run.id);
+    console.log(
+      `CIA daily kick station=${tick.processedStation ?? 'none'} done=${tick.done}`,
+    );
+    return (await createCiaSnapshotStore(env).getRun(run.id)) ?? run;
+  } catch (err) {
+    console.error('CIA daily first-station kick failed', err);
+    return run;
+  }
 }
 
 /** Ticker cron (every 3 min): advance the active run by one station. */
 export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
-  return processCiaSnapshotTick(env);
+  const tick = await processCiaSnapshotTick(env);
+  if (!tick.processedStation && tick.run?.status === 'running' && !tick.done) {
+    console.warn(
+      `CIA ticker idle for run ${tick.run.id} (claim skipped or no pending station)`,
+    );
+  }
+  return tick;
 }

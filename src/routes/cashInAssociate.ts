@@ -297,8 +297,17 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
                 windowTo: progress.windowTo,
                 startedAt: progress.startedAt,
                 stationsTotal: Math.max(progress.stationsTotal, ALLOWED_STATIONS.size),
-                stationsOk: progressCounters?.stationsOk ?? progress.stationsOk,
+                // Count any station that has been claimed/attempted so UI does not
+                // stay at 0/38 when failures are queued for end-of-run retry.
+                stationsOk:
+                  (progressCounters?.stationsOk ?? progress.stationsOk)
+                  + (progressCounters?.stationsFailed ?? progress.stationsFailed)
+                  + (progressCounters?.retryQueuedCount ?? 0)
+                  + (progressCounters?.processingCount ?? 0),
+                stationsSucceeded: progressCounters?.stationsOk ?? progress.stationsOk,
                 stationsFailed: progressCounters?.stationsFailed ?? progress.stationsFailed,
+                stationsRetryQueued: progressCounters?.retryQueuedCount ?? 0,
+                stationsProcessing: progressCounters?.processingCount ?? 0,
               }
             : null,
           totals,
@@ -511,15 +520,28 @@ export async function ciaRefreshHandler(c: Context<{ Bindings: Env }>) {
   }
 
   const { run, resumed } = await startCiaSnapshotRun(c.env);
+  // Advance one station immediately so "Refresh all" is not stuck at 0/N while
+  // waiting for the */3 cron (or when that cron is delayed / not firing).
+  let tick: Awaited<ReturnType<typeof processCiaSnapshotTick>> | null = null;
+  try {
+    tick = await processCiaSnapshotTick(c.env, run.id);
+  } catch (err) {
+    console.error('CIA refresh first-station kick failed', err);
+  }
   await invalidateCacheAll('cia:', createApiResponseCacheStore(c.env));
+  const latest = tick?.run ?? (await createCiaSnapshotStore(c.env).getRun(run.id)) ?? run;
 
   return c.json({
     status: 'accepted',
     resumed,
-    run,
-    message:
-      'Snapshot run started. The ticker cron processes one station every ~3 minutes; ' +
-      'poll the network endpoint or POST the continue endpoint to advance manually.',
+    run: latest,
+    processedStation: tick?.processedStation ?? null,
+    done: tick?.done ?? false,
+    message: tick?.processedStation
+      ? `Snapshot run ${resumed ? 'resumed' : 'started'}; processed ${tick.processedStation}. `
+        + 'Ticker continues about every 3 minutes, or click Update numbers to advance one station.'
+      : 'Snapshot run started. The ticker cron processes one station every ~3 minutes; '
+        + 'click Update numbers to advance manually if progress stays at 0.',
   });
 }
 
