@@ -437,6 +437,40 @@ export async function startCiaSnapshotRun(
 }
 
 /**
+ * Attach a one-station save to an existing network run. Prefer today's
+ * running Refresh-all, else the completed list the Stations page shows.
+ * Never start a new 38-station running run from row Refresh.
+ */
+async function pickRunForSingleStationSave(
+  store: ReturnType<typeof createCiaSnapshotStore>,
+  window: { asOfDate: string; fromDate: string; toDate: string },
+  fullCount: number,
+): Promise<CiaSnapshotRun> {
+  const running = await store.getActiveRunningRun();
+  if (running && running.asOfDate === window.asOfDate) {
+    return running;
+  }
+
+  const resolved = await store.resolveNetworkRun(fullCount);
+  if (resolved.progress && resolved.progress.asOfDate === window.asOfDate) {
+    return resolved.progress;
+  }
+  if (resolved.run) {
+    return resolved.run;
+  }
+
+  const best = await store.getBestCompletedNetworkRun(Math.min(2, fullCount));
+  if (best) return best;
+
+  return store.createRun({
+    asOfDate: window.asOfDate,
+    windowFrom: window.fromDate,
+    windowTo: window.toDate,
+    stationsTotal: fullCount,
+  });
+}
+
+/**
  * Persist a BFF-merged CIA payload for one station (no Amazon calls).
  * Used when Ops Pulse refreshes via live-range chunks to avoid Error 1102.
  */
@@ -453,27 +487,7 @@ export async function saveCiaStationPayload(
   const store = createCiaSnapshotStore(env);
   const window = getCiaAnalysisWindow();
   const fullCount = stationList().length;
-
-  // Prefer today's active full run, else a solid completed same-day run.
-  // Never attach to a 1-station "completed" patch as the network source of truth.
-  let run = await store.getActiveRunningRun();
-  if (!run || run.asOfDate !== window.asOfDate) {
-    const best = await store.getBestCompletedNetworkRun(Math.min(2, fullCount));
-    run =
-      best && best.asOfDate === window.asOfDate && best.stationsTotal >= Math.min(2, fullCount)
-        ? best
-        : null;
-  }
-  if (!run) {
-    // Always size as a full network run so a single-station patch cannot
-    // become the "latest completed" view with only one station.
-    run = await store.createRun({
-      asOfDate: window.asOfDate,
-      windowFrom: window.fromDate,
-      windowTo: window.toDate,
-      stationsTotal: fullCount,
-    });
-  }
+  const run = await pickRunForSingleStationSave(store, window, fullCount);
 
   const accountKey = portalAccountKeyForStation(code);
   const normalized: CiaStationPayload = {
@@ -519,23 +533,7 @@ export async function refreshCiaStation(
   const store = createCiaSnapshotStore(env);
   const window = getCiaAnalysisWindow();
   const fullCount = stationList().length;
-
-  let run = await store.getActiveRunningRun();
-  if (!run || run.asOfDate !== window.asOfDate) {
-    const best = await store.getBestCompletedNetworkRun(Math.min(2, fullCount));
-    run =
-      best && best.asOfDate === window.asOfDate && best.stationsTotal >= Math.min(2, fullCount)
-        ? best
-        : null;
-  }
-  if (!run) {
-    run = await store.createRun({
-      asOfDate: window.asOfDate,
-      windowFrom: window.fromDate,
-      windowTo: window.toDate,
-      stationsTotal: fullCount,
-    });
-  }
+  const run = await pickRunForSingleStationSave(store, window, fullCount);
 
   const roster = await loadWorkforceRosterMap(env);
   // Chunked via PUBLIC_WORKER_URL when set (fresh CPU per live-range chunk).
