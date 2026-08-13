@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import type { Env, CiaStationSummary, CiaStationPayload } from '../types';
+import type { Env, CiaStationSummary, CiaStationPayload, CiaSnapshotRun } from '../types';
 import {
   ALLOWED_STATIONS,
   API_CACHE_TTL_MS,
@@ -17,11 +17,37 @@ import { ensureValidAmazonSession } from '../session/ensureSession';
 import { loadWorkforceRosterMap } from '../services/workforceRoster';
 import { reconcileCashInAssociate } from '../services/cashInAssociate';
 import {
+  peekNextCiaStation,
   processCiaSnapshotTick,
   refreshCiaStation,
   saveCiaStationPayload,
   startCiaSnapshotRun,
 } from '../services/ciaSnapshotRunner';
+
+async function buildRefreshProgress(env: Env, run: CiaSnapshotRun | null) {
+  if (!run) return null;
+  const store = createCiaSnapshotStore(env);
+  const counters = await store.syncRunCountersFromSnapshots(run.id);
+  const attempted =
+    counters.stationsOk
+    + counters.stationsFailed
+    + counters.retryQueuedCount
+    + counters.processingCount;
+  return {
+    id: run.id,
+    status: run.status,
+    asOfDate: run.asOfDate,
+    windowFrom: run.windowFrom,
+    windowTo: run.windowTo,
+    startedAt: run.startedAt,
+    stationsTotal: Math.max(run.stationsTotal, ALLOWED_STATIONS.size),
+    stationsOk: attempted,
+    stationsSucceeded: counters.stationsOk,
+    stationsFailed: counters.stationsFailed,
+    stationsRetryQueued: counters.retryQueuedCount,
+    stationsProcessing: counters.processingCount,
+  };
+}
 
 function sumSummaries(summaries: CiaStationSummary[]): CiaStationSummary {
   const ciaTotal = round2(summaries.reduce((s, x) => s + (x.ciaTotal ?? 0), 0));
@@ -480,15 +506,18 @@ export async function ciaDailyLedgerHandler(c: Context<{ Bindings: Env }>) {
 export async function ciaRefreshHandler(c: Context<{ Bindings: Env }>) {
   let stationCode = (c.req.query('stationCode') ?? '').trim().toUpperCase();
   let precomputedPayload: CiaStationPayload | null = null;
+  let skipFirstTick = false;
   try {
     const body = (await c.req.json()) as {
       stationCode?: string;
       precomputedPayload?: CiaStationPayload;
+      skipFirstTick?: boolean;
     };
     if (body?.stationCode?.trim()) stationCode = body.stationCode.trim().toUpperCase();
     if (body?.precomputedPayload && typeof body.precomputedPayload === 'object') {
       precomputedPayload = body.precomputedPayload;
     }
+    skipFirstTick = Boolean(body?.skipFirstTick);
   } catch {
     /* empty body = full run */
   }
@@ -522,23 +551,23 @@ export async function ciaRefreshHandler(c: Context<{ Bindings: Env }>) {
   // Manual Refresh all always starts a clean run so the UI resets from the
   // previous retry/fail queue (e.g. 38/38 with 0 ok) instead of resuming it.
   const { run, resumed } = await startCiaSnapshotRun(c.env, { forceNew: true });
-  // Advance one station immediately so "Refresh all" is not stuck at 0/N while
-  // waiting for the */3 cron (or when that cron is delayed / not firing).
+  // Ops Pulse BFF passes skipFirstTick and refreshes the first station itself
+  // via the proven chunked path (same as row Refresh). Worker-side first kick
+  // often lands in retry because nested self-fetch hits CF resource limits.
   let tick: Awaited<ReturnType<typeof processCiaSnapshotTick>> | null = null;
-  try {
-    tick = await processCiaSnapshotTick(c.env, run.id);
-  } catch (err) {
-    console.error('CIA refresh first-station kick failed', err);
+  if (!skipFirstTick) {
+    try {
+      tick = await processCiaSnapshotTick(c.env, run.id);
+    } catch (err) {
+      console.error('CIA refresh first-station kick failed', err);
+    }
   }
   await invalidateCacheAll('cia:', createApiResponseCacheStore(c.env));
   const store = createCiaSnapshotStore(c.env);
   const latest = tick?.run ?? (await store.getRun(run.id)) ?? run;
-  const counters = await store.syncRunCountersFromSnapshots(latest.id);
-  const attempted =
-    counters.stationsOk
-    + counters.stationsFailed
-    + counters.retryQueuedCount
-    + counters.processingCount;
+  const refreshProgress = await buildRefreshProgress(c.env, latest);
+  const attempted = refreshProgress?.stationsOk ?? 0;
+  const total = refreshProgress?.stationsTotal ?? Math.max(latest.stationsTotal, ALLOWED_STATIONS.size);
 
   return c.json({
     status: 'accepted',
@@ -546,24 +575,47 @@ export async function ciaRefreshHandler(c: Context<{ Bindings: Env }>) {
     run: latest,
     processedStation: tick?.processedStation ?? null,
     done: tick?.done ?? false,
-    refreshProgress: {
-      id: latest.id,
-      status: latest.status,
-      asOfDate: latest.asOfDate,
-      windowFrom: latest.windowFrom,
-      windowTo: latest.windowTo,
-      startedAt: latest.startedAt,
-      stationsTotal: Math.max(latest.stationsTotal, ALLOWED_STATIONS.size),
-      stationsOk: attempted,
-      stationsSucceeded: counters.stationsOk,
-      stationsFailed: counters.stationsFailed,
-      stationsRetryQueued: counters.retryQueuedCount,
-      stationsProcessing: counters.processingCount,
-    },
+    refreshProgress,
     message: tick?.processedStation
-      ? `Fresh snapshot run started; processed ${tick.processedStation} (${attempted}/${Math.max(latest.stationsTotal, ALLOWED_STATIONS.size)}). `
+      ? `Fresh snapshot run started; processed ${tick.processedStation} (${attempted}/${total}). `
         + 'Ticker continues about every 3 minutes, or click Update numbers to advance one station.'
-      : 'Fresh snapshot run started. Click Update numbers to fetch the first station if progress stays at 0.',
+      : skipFirstTick
+        ? 'Fresh snapshot run started. Ops Pulse will fetch the first station via chunked refresh.'
+        : 'Fresh snapshot run started. Click Update numbers to fetch the first station if progress stays at 0.',
+  });
+}
+
+/**
+ * GET/POST /api/admin/internal/cia-snapshot/next-station
+ * Return the next unfinished station for the active run without Amazon fetch.
+ */
+export async function ciaNextStationHandler(c: Context<{ Bindings: Env }>) {
+  let runId: string | undefined;
+  try {
+    if (c.req.method === 'POST') {
+      const body = (await c.req.json()) as { runId?: string };
+      if (body?.runId?.trim()) runId = body.runId.trim();
+    } else {
+      const q = c.req.query('runId')?.trim();
+      if (q) runId = q;
+    }
+  } catch {
+    /* empty body = active run */
+  }
+
+  const peek = await peekNextCiaStation(c.env, runId);
+  const latest = peek.run;
+  const refreshProgress = await buildRefreshProgress(c.env, latest);
+
+  return c.json({
+    status: 'ok',
+    stationCode: peek.stationCode,
+    done: peek.done,
+    run: latest,
+    window: latest
+      ? { from: latest.windowFrom, to: latest.windowTo }
+      : null,
+    refreshProgress,
   });
 }
 
@@ -583,38 +635,14 @@ export async function ciaContinueHandler(c: Context<{ Bindings: Env }>) {
 
   const tick = await processCiaSnapshotTick(c.env, runId);
   await invalidateCacheAll('cia:', createApiResponseCacheStore(c.env));
-  const store = createCiaSnapshotStore(c.env);
   const latest = tick.run;
-  const counters = latest
-    ? await store.syncRunCountersFromSnapshots(latest.id)
-    : null;
-  const attempted = counters
-    ? counters.stationsOk
-      + counters.stationsFailed
-      + counters.retryQueuedCount
-      + counters.processingCount
-    : 0;
+  const refreshProgress = await buildRefreshProgress(c.env, latest);
 
   return c.json({
     status: 'ok',
     processedStation: tick.processedStation,
     done: tick.done,
     run: tick.run,
-    refreshProgress: latest && counters
-      ? {
-          id: latest.id,
-          status: latest.status,
-          asOfDate: latest.asOfDate,
-          windowFrom: latest.windowFrom,
-          windowTo: latest.windowTo,
-          startedAt: latest.startedAt,
-          stationsTotal: Math.max(latest.stationsTotal, ALLOWED_STATIONS.size),
-          stationsOk: attempted,
-          stationsSucceeded: counters.stationsOk,
-          stationsFailed: counters.stationsFailed,
-          stationsRetryQueued: counters.retryQueuedCount,
-          stationsProcessing: counters.processingCount,
-        }
-      : null,
+    refreshProgress,
   });
 }

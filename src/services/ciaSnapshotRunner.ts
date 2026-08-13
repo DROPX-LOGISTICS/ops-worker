@@ -215,6 +215,61 @@ export interface CiaTickResult {
   done: boolean;
 }
 
+export interface CiaNextStationResult {
+  run: CiaSnapshotRun | null;
+  stationCode: string | null;
+  done: boolean;
+}
+
+function pickNextStationCode(
+  stations: string[],
+  byCode: Map<string, { status: string; error: string | null }>,
+): string | null {
+  return (
+    stations.find((code) => {
+      const snap = byCode.get(code);
+      return !snap;
+    })
+    ?? stations.find((code) => {
+      const snap = byCode.get(code);
+      return Boolean(snap && snap.status === 'error' && snap.error === CIA_PROCESSING_MARKER);
+    })
+    ?? stations.find((code) => {
+      const snap = byCode.get(code);
+      return Boolean(snap && isRetryPendingSnapshot(snap.status, snap.error));
+    })
+    ?? null
+  );
+}
+
+/**
+ * Return the next station that still needs Amazon data for the active run,
+ * without fetching. Used by Ops Pulse so it can refresh via the proven BFF
+ * chunked path (same as the row Refresh button).
+ */
+export async function peekNextCiaStation(
+  env: Env,
+  runId?: string,
+): Promise<CiaNextStationResult> {
+  const store = createCiaSnapshotStore(env);
+  const run = runId ? await store.getRun(runId) : await store.getActiveRunningRun();
+  if (!run || run.status !== 'running') {
+    return { run: run ?? null, stationCode: null, done: true };
+  }
+
+  const stations = stationList();
+  const snapshots = await store.listStationSnapshots(run.id);
+  const byCode = new Map(snapshots.map((s) => [s.stationCode, s]));
+  const nextStation = pickNextStationCode(stations, byCode);
+
+  if (!nextStation) {
+    await finalizeFromSnapshots(env, run.id, stations.length);
+    return { run: await store.getRun(run.id), stationCode: null, done: true };
+  }
+
+  return { run, stationCode: nextStation, done: false };
+}
+
 /**
  * Process exactly one unfinished station of the active running run.
  * Selection is based on missing/stale snapshots (not a fragile index alone),
@@ -231,21 +286,7 @@ export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<
   const stations = stationList();
   const snapshots = await store.listStationSnapshots(run.id);
   const byCode = new Map(snapshots.map((s) => [s.stationCode, s]));
-
-  const nextStation =
-    stations.find((code) => {
-      const snap = byCode.get(code);
-      return !snap;
-    })
-    ?? stations.find((code) => {
-      const snap = byCode.get(code);
-      return Boolean(snap && snap.status === 'error' && snap.error === CIA_PROCESSING_MARKER);
-    })
-    ?? stations.find((code) => {
-      const snap = byCode.get(code);
-      return Boolean(snap && isRetryPendingSnapshot(snap.status, snap.error));
-    })
-    ?? null;
+  const nextStation = pickNextStationCode(stations, byCode);
 
   if (!nextStation) {
     await finalizeFromSnapshots(env, run.id, stations.length);
@@ -537,30 +578,26 @@ export async function refreshCiaStation(
   return { runId: run.id, snapshotStatus: 'error', error: result.error };
 }
 
-/** Daily cron (06:00 IST): start/resume the run, then process the first station immediately. */
+/** Daily cron (06:00 IST): start/resume the run. Station fetches happen via
+ * Ops Pulse (Update numbers / Refresh all) using the BFF chunked path — worker
+ * nested self-fetch ticks reliably hit Cloudflare resource limits. */
 export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
   const { run } = await startCiaSnapshotRun(env);
-  // Do not wait for the next */3 ticker — kick the first station now so a stuck
-  // or delayed cron trigger cannot leave the run at 0/N all morning.
-  try {
-    const tick = await processCiaSnapshotTick(env, run.id);
-    console.log(
-      `CIA daily kick station=${tick.processedStation ?? 'none'} done=${tick.done}`,
-    );
-    return (await createCiaSnapshotStore(env).getRun(run.id)) ?? run;
-  } catch (err) {
-    console.error('CIA daily first-station kick failed', err);
-    return run;
-  }
+  console.log(
+    `CIA daily run ${run.id} ready; advance stations via Ops Pulse Update numbers / Refresh all`,
+  );
+  return run;
 }
 
-/** Ticker cron (every 3 min): advance the active run by one station. */
+/** Ticker cron: finalize when complete; do not Amazon-fetch (see ciaDailyCron). */
 export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
-  const tick = await processCiaSnapshotTick(env);
-  if (!tick.processedStation && tick.run?.status === 'running' && !tick.done) {
-    console.warn(
-      `CIA ticker idle for run ${tick.run.id} (claim skipped or no pending station)`,
-    );
+  const peek = await peekNextCiaStation(env);
+  if (peek.done) {
+    return { run: peek.run, processedStation: null, done: true };
   }
-  return tick;
+  console.log(
+    `CIA ticker idle run=${peek.run?.id ?? 'none'} next=${peek.stationCode}; `
+      + 'use Ops Pulse Update numbers to fetch the next station',
+  );
+  return { run: peek.run, processedStation: null, done: false };
 }
