@@ -578,10 +578,10 @@ export async function ciaRefreshHandler(c: Context<{ Bindings: Env }>) {
     refreshProgress,
     message: tick?.processedStation
       ? `Fresh snapshot run started; processed ${tick.processedStation} (${attempted}/${total}). `
-        + 'Ticker continues about every 3 minutes, or click Update numbers to advance one station.'
+        + 'Ops Pulse advances about every 15 seconds while the page is open; cron is every 3 minutes.'
       : skipFirstTick
         ? 'Fresh snapshot run started. Ops Pulse will fetch the first station via chunked refresh.'
-        : 'Fresh snapshot run started. Click Update numbers to fetch the first station if progress stays at 0.',
+        : 'Fresh snapshot run started. Ops Pulse advances about every 15 seconds while the page is open.',
   });
 }
 

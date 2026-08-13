@@ -578,26 +578,21 @@ export async function refreshCiaStation(
   return { runId: run.id, snapshotStatus: 'error', error: result.error };
 }
 
-/** Daily cron (06:00 IST): start/resume the run. Station fetches happen via
- * Ops Pulse (Update numbers / Refresh all) using the BFF chunked path — worker
- * nested self-fetch ticks reliably hit Cloudflare resource limits. */
+/** Daily cron (06:00 IST): start/resume the run. Overnight ticker (every 3 min)
+ * advances stations when nobody has Ops Pulse open. The UI uses a ~15s gap. */
 export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
   const { run } = await startCiaSnapshotRun(env);
-  console.log(
-    `CIA daily run ${run.id} ready; advance stations via Ops Pulse Update numbers / Refresh all`,
-  );
+  console.log(`CIA daily run ${run.id} status=${run.status}`);
   return run;
 }
 
-/** Ticker cron: finalize when complete; do not Amazon-fetch (see ciaDailyCron). */
+/** Ticker cron (every 3 min): advance the active run by one station. */
 export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
-  const peek = await peekNextCiaStation(env);
-  if (peek.done) {
-    return { run: peek.run, processedStation: null, done: true };
+  const tick = await processCiaSnapshotTick(env);
+  if (!tick.processedStation && tick.run?.status === 'running' && !tick.done) {
+    console.warn(
+      `CIA ticker idle for run ${tick.run.id} (claim skipped or no pending station)`,
+    );
   }
-  console.log(
-    `CIA ticker idle run=${peek.run?.id ?? 'none'} next=${peek.stationCode}; `
-      + 'use Ops Pulse Update numbers to fetch the next station',
-  );
-  return { run: peek.run, processedStation: null, done: false };
+  return tick;
 }
