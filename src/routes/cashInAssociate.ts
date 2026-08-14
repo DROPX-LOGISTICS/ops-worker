@@ -152,11 +152,11 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
     if (toDateQuery < fromDateQuery) {
       throw new ValidationInputError('toDate must be on or after fromDate');
     }
-    const yesterday = addDaysYmd(todayIstYmd(), -1);
-    const earliest = addDaysYmd(yesterday, -89);
-    if (fromDateQuery < earliest || toDateQuery > yesterday) {
+    const today = todayIstYmd();
+    const earliest = addDaysYmd(today, -89);
+    if (fromDateQuery < earliest || toDateQuery > today) {
       throw new ValidationInputError(
-        `Date range must stay between ${earliest} and ${yesterday} (up to 90 days).`,
+        `Date range must stay between ${earliest} and ${today} (up to 90 days).`,
       );
     }
     if (daysBetweenYmd(fromDateQuery, toDateQuery) > 89) {
