@@ -21,6 +21,7 @@ import {
   peekNextCiaStation,
   processCiaSnapshotTick,
   refreshCiaStation,
+  releaseCiaStationClaim,
   saveCiaStationPayload,
   startCiaSnapshotRun,
 } from '../services/ciaSnapshotRunner';
@@ -642,6 +643,37 @@ export async function ciaNextStationHandler(c: Context<{ Bindings: Env }>) {
     window: latest
       ? { from: latest.windowFrom, to: latest.windowTo }
       : null,
+    refreshProgress,
+  });
+}
+
+/**
+ * POST /api/admin/internal/cia-snapshot/release-claim
+ * Drop an in-flight PROCESSING marker after a BFF/Cloudflare abort so the
+ * station can be retried on the next continue instead of waiting 6 minutes.
+ */
+export async function ciaReleaseClaimHandler(c: Context<{ Bindings: Env }>) {
+  let runId: string | undefined;
+  let stationCode = '';
+  try {
+    const body = (await c.req.json()) as { runId?: string; stationCode?: string };
+    if (body?.runId?.trim()) runId = body.runId.trim();
+    stationCode = String(body?.stationCode ?? '').trim().toUpperCase();
+  } catch {
+    /* empty */
+  }
+  if (!stationCode) {
+    return c.json({ error: 'stationCode is required', code: 'VALIDATION' }, 400);
+  }
+
+  const result = await releaseCiaStationClaim(c.env, { runId, stationCode });
+  const latest = result.run;
+  const refreshProgress = await buildRefreshProgress(c.env, latest);
+  return c.json({
+    status: 'ok',
+    released: result.released,
+    stationCode,
+    run: latest,
     refreshProgress,
   });
 }

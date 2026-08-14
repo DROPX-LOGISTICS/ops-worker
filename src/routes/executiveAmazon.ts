@@ -175,6 +175,7 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
     const {
       entries: reconciliation,
       pendingReconTotal,
+      sameDayPendingReconTotal,
       completedReconTotal,
     } = enrichReconciliationWithAgeing(rawReconciliation, ageingPackages);
 
@@ -190,6 +191,7 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
       reconciliation,
       reconciliationCount: reconciliation.length,
       pendingReconTotal,
+      sameDayPendingReconTotal,
       completedReconTotal,
       expectedCash,
       workforceRoster: {

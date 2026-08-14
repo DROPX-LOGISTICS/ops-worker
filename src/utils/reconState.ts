@@ -2,7 +2,9 @@ import type {
   AgeingPackageDetail,
   DriverReconciliationEntry,
   Money,
+  ReconBreakdownItem,
 } from '../types';
+import { ageingCalendarYmd, parseAgeingUpdatedMs, todayIstYmd } from './dateRange';
 import { round2 } from './number';
 
 /** Ageing package state → recon classification for the requested date. */
@@ -11,12 +13,26 @@ export type ReconStateClass = 'pending' | 'completed' | 'other';
 export interface AgeingReconTotals {
   pending: number;
   completed: number;
+  sameDayPending: number;
+  priorPending: number;
 }
 
 export interface EnrichReconciliationResult {
   entries: DriverReconciliationEntry[];
+  /** Prior-day Cash In Associate — cash sheet lock / warning. */
   pendingReconTotal: number;
+  /** Today's Cash In Associate — driver validation only, not a cash-sheet lock. */
+  sameDayPendingReconTotal: number;
   completedReconTotal: number;
+}
+
+interface DriverAgeingBuckets {
+  pending: number;
+  completed: number;
+  sameDayPending: number;
+  priorPending: number;
+  priorBreakdown: ReconBreakdownItem[];
+  sameDayBreakdown: ReconBreakdownItem[];
 }
 
 function isCashMethod(method: string | null | undefined): boolean {
@@ -26,6 +42,17 @@ function isCashMethod(method: string | null | undefined): boolean {
 /** Ageing money fields are often in paise (e.g. 284723.0 → 2847.23). */
 function toRupees(amount: number): number {
   return round2(amount / 100);
+}
+
+function emptyBuckets(): DriverAgeingBuckets {
+  return {
+    pending: 0,
+    completed: 0,
+    sameDayPending: 0,
+    priorPending: 0,
+    priorBreakdown: [],
+    sameDayBreakdown: [],
+  };
 }
 
 /**
@@ -52,14 +79,32 @@ export function classifyReconState(state: string | null | undefined): ReconState
   return 'other';
 }
 
+function breakdownFromPackage(pkg: AgeingPackageDetail): ReconBreakdownItem {
+  const ms = parseAgeingUpdatedMs(pkg.lastUpdatedTime);
+  return {
+    trackingId: pkg.trackingId,
+    paymentMethod: (pkg.actualPaymentMethod ?? pkg.paymentMethod ?? 'CASH').trim() || 'CASH',
+    amount: { unit: 'INR', value: toRupees(pkg.receivableAmount) },
+    stationTimeZone: 'IST',
+    ...(ms != null ? { moneyCollectionTime: ms } : {}),
+  };
+}
+
+function isSameDayPackage(pkg: AgeingPackageDetail, todayYmd: string): boolean {
+  const day = ageingCalendarYmd(pkg.lastUpdatedTime);
+  return Boolean(day && day === todayYmd);
+}
+
 /**
  * Sum CASH ageing receivable amounts by driverId (tasId) into pending vs completed.
  * Unassigned packages (no driverId) are keyed as `__unassigned__`.
+ * Same-calendar-day CIA is split out so the cash sheet does not lock today's count.
  */
 export function sumAgeingReconByDriver(
   packages: AgeingPackageDetail[],
-): Map<string, AgeingReconTotals> {
-  const byDriver = new Map<string, AgeingReconTotals>();
+  todayYmd = todayIstYmd(),
+): Map<string, DriverAgeingBuckets> {
+  const byDriver = new Map<string, DriverAgeingBuckets>();
 
   for (const pkg of packages) {
     if (!isCashMethod(pkg.actualPaymentMethod)) continue;
@@ -69,13 +114,25 @@ export function sumAgeingReconByDriver(
     const driverKey = (pkg.driverId ?? '').trim() || '__unassigned__';
     let totals = byDriver.get(driverKey);
     if (!totals) {
-      totals = { pending: 0, completed: 0 };
+      totals = emptyBuckets();
       byDriver.set(driverKey, totals);
     }
 
     const amount = toRupees(pkg.receivableAmount);
-    if (kind === 'pending') totals.pending = round2(totals.pending + amount);
-    else totals.completed = round2(totals.completed + amount);
+    if (kind === 'completed') {
+      totals.completed = round2(totals.completed + amount);
+      continue;
+    }
+
+    totals.pending = round2(totals.pending + amount);
+    const item = breakdownFromPackage(pkg);
+    if (isSameDayPackage(pkg, todayYmd)) {
+      totals.sameDayPending = round2(totals.sameDayPending + amount);
+      totals.sameDayBreakdown.push(item);
+    } else {
+      totals.priorPending = round2(totals.priorPending + amount);
+      totals.priorBreakdown.push(item);
+    }
   }
 
   return byDriver;
@@ -93,36 +150,49 @@ function moneyWithValue(existing: Money | undefined, value: number): Money {
  *
  * Amazon's pending recon is cumulative/current; ageing for the requested
  * calendar day is the source of truth for historical requests.
+ *
+ * Same-day Cash In Associate is the cash being counted now. It must not lock
+ * denominations on the cash sheet (`overallPendingRecon`). It stays on
+ * `sameDayPendingRecon` for Driver validation.
  */
 export function enrichReconciliationWithAgeing(
   entries: DriverReconciliationEntry[],
   packages: AgeingPackageDetail[],
+  options?: { todayYmd?: string },
 ): EnrichReconciliationResult {
-  const byDriver = sumAgeingReconByDriver(packages);
+  const todayYmd = options?.todayYmd ?? todayIstYmd();
+  const byDriver = sumAgeingReconByDriver(packages, todayYmd);
 
   let pendingReconTotal = 0;
+  let sameDayPendingReconTotal = 0;
   let completedReconTotal = 0;
   for (const totals of byDriver.values()) {
-    pendingReconTotal = round2(pendingReconTotal + totals.pending);
+    pendingReconTotal = round2(pendingReconTotal + totals.priorPending);
+    sameDayPendingReconTotal = round2(sameDayPendingReconTotal + totals.sameDayPending);
     completedReconTotal = round2(completedReconTotal + totals.completed);
   }
 
   const enriched: DriverReconciliationEntry[] = entries.map((entry) => {
     const tasId = (entry.driverInfo?.id ?? '').trim();
-    const totals = (tasId && byDriver.get(tasId)) || { pending: 0, completed: 0 };
+    const totals = (tasId && byDriver.get(tasId)) || emptyBuckets();
 
     return {
       ...entry,
-      pendingReconAmount: totals.pending,
+      pendingReconAmount: totals.priorPending,
+      sameDayPendingReconAmount: totals.sameDayPending,
       completedReconAmount: totals.completed,
       paymentInfo: {
         ...entry.paymentInfo,
         overallPendingRecon: moneyWithValue(
           entry.paymentInfo?.overallPendingRecon,
-          totals.pending,
+          totals.priorPending,
         ),
-        // Amazon breakdown is not date-scoped; clear so it cannot contradict.
-        overallPendingReconBreakdownList: [],
+        sameDayPendingRecon: moneyWithValue(
+          entry.paymentInfo?.sameDayPendingRecon,
+          totals.sameDayPending,
+        ),
+        overallPendingReconBreakdownList: totals.priorBreakdown,
+        sameDayPendingReconBreakdownList: totals.sameDayBreakdown,
       },
     };
   });
@@ -130,6 +200,7 @@ export function enrichReconciliationWithAgeing(
   return {
     entries: enriched,
     pendingReconTotal,
+    sameDayPendingReconTotal,
     completedReconTotal,
   };
 }

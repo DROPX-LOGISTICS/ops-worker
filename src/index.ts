@@ -24,6 +24,7 @@ import {
   ciaRefreshHandler,
   ciaNextStationHandler,
   ciaContinueHandler,
+  ciaReleaseClaimHandler,
 } from './routes/cashInAssociate';
 import { ciaDailyCron, ciaTickerCron } from './services/ciaSnapshotRunner';
 import { listNotificationsHandler, acknowledgeNotificationHandler } from './routes/notifications';
@@ -77,6 +78,7 @@ app.get('/api/admin/executive/cash-in-associate', ciaStationHandler);
 app.post('/api/admin/executive/cash-in-associate/refresh', ciaRefreshHandler);
 app.get('/api/admin/internal/cia-snapshot/next-station', ciaNextStationHandler);
 app.post('/api/admin/internal/cia-snapshot/next-station', ciaNextStationHandler);
+app.post('/api/admin/internal/cia-snapshot/release-claim', ciaReleaseClaimHandler);
 app.post('/api/admin/internal/cia-snapshot/continue', ciaContinueHandler);
 
 // Common mix-up: Ops Pulse BFF paths are on the Next.js app, not this Worker.

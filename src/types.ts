@@ -92,15 +92,20 @@ export interface DriverReconciliationEntry {
     balance: Money;
     variance: Money;
     /**
-     * Pending recon for the requested date.
-     * Overridden from ageing `state` (Cash In Associate) when enrichment runs;
+     * Prior-day Cash In Associate for the requested date.
+     * Same-day CIA is excluded so the cash sheet can count today's cash.
      * Amazon's raw value is cumulative and not reliable for historical dates.
      */
     overallPendingRecon: Money;
     overallPendingReconBreakdownList: ReconBreakdownItem[];
+    /** Today's Cash In Associate — Driver validation only, not a cash-sheet lock. */
+    sameDayPendingRecon?: Money;
+    sameDayPendingReconBreakdownList?: ReconBreakdownItem[];
   };
-  /** Ageing-derived pending (Cash In Associate) for the requested date (INR). */
+  /** Ageing-derived prior-day pending (Cash In Associate) (INR). */
   pendingReconAmount?: number;
+  /** Ageing-derived same-day pending (Cash In Associate) (INR). */
+  sameDayPendingReconAmount?: number;
   /** Ageing-derived completed (CASH_AT_STATION) for the requested date (INR). */
   completedReconAmount?: number;
 }

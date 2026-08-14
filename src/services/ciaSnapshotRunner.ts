@@ -287,6 +287,38 @@ export async function peekNextCiaStation(
 }
 
 /**
+ * BFF hit Cloudflare 1102 / abort after claiming a station. Release the
+ * in-flight marker so the next continue can retry immediately instead of
+ * waiting for the 6-minute stale timeout.
+ */
+export async function releaseCiaStationClaim(
+  env: Env,
+  args: { runId?: string; stationCode: string },
+): Promise<{ released: boolean; run: CiaSnapshotRun | null }> {
+  const store = createCiaSnapshotStore(env);
+  const run = args.runId ? await store.getRun(args.runId) : await store.getActiveRunningRun();
+  if (!run || run.status !== 'running') {
+    return { released: false, run: run ?? null };
+  }
+  const code = args.stationCode.trim().toUpperCase();
+  const snap = await store.getStationSnapshot(run.id, code);
+  if (!snap || !isProcessingSnapshot(snap.status, snap.error)) {
+    return { released: false, run };
+  }
+  await store.upsertStationSnapshot({
+    runId: run.id,
+    stationCode: code,
+    accountKey: snap.accountKey,
+    status: 'error',
+    error: CIA_RETRY_PENDING_MARKER,
+    summary: snap.summary,
+    payload: snap.payload,
+  });
+  await store.syncRunCountersFromSnapshots(run.id);
+  return { released: true, run: await store.getRun(run.id) };
+}
+
+/**
  * Cron tick: fetch exactly one 7-day chunk in this isolate, then stop.
  * After all weeks for a station are in, merge and mark ok.
  */
