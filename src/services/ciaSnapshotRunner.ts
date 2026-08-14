@@ -651,9 +651,16 @@ export async function refreshCiaStation(
   return { runId: run.id, snapshotStatus: 'error', error: result.error };
 }
 
-/** Daily cron (06:00 IST): start/resume the run, then fetch the first 7-day chunk. */
+/** Daily cron (06:00 IST): start/resume the run, then fetch one station via Ops Pulse BFF. */
 export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
   const { run } = await startCiaSnapshotRun(env);
+  const viaPulse = await continueViaOpsPulse(env, run.id);
+  if (viaPulse.handled) {
+    console.log(
+      `CIA daily run ${run.id} via Ops Pulse station=${viaPulse.processedStation ?? 'none'} done=${viaPulse.done}`,
+    );
+    return (await createCiaSnapshotStore(env).getRun(run.id)) ?? run;
+  }
   try {
     const tick = await processCiaSnapshotTick(env, run.id);
     console.log(
@@ -661,13 +668,21 @@ export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
     );
     return (await createCiaSnapshotStore(env).getRun(run.id)) ?? run;
   } catch (err) {
-    console.error('CIA daily first-chunk kick failed', err);
+    console.error('CIA daily first-station kick failed', err);
     return run;
   }
 }
 
-/** Ticker cron (every 3 min): one 7-day chunk of the next unfinished station. */
+/** Ticker: one full station via Ops Pulse (same as Update numbers), else one 7-day chunk. */
 export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
+  const viaPulse = await continueViaOpsPulse(env);
+  if (viaPulse.handled) {
+    const run = viaPulse.run ?? (await createCiaSnapshotStore(env).getActiveRunningRun());
+    if (viaPulse.processedStation) {
+      console.log(`CIA tick via Ops Pulse station=${viaPulse.processedStation} done=${viaPulse.done}`);
+    }
+    return { run, processedStation: viaPulse.processedStation, done: viaPulse.done };
+  }
   const tick = await processCiaSnapshotTick(env);
   if (tick.processedStation) {
     console.log(`CIA tick station=${tick.processedStation} done=${tick.done}`);
@@ -675,4 +690,54 @@ export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
     console.warn(`CIA ticker idle for run ${tick.run.id}`);
   }
   return tick;
+}
+
+async function continueViaOpsPulse(
+  env: Env,
+  runId?: string,
+): Promise<{
+  handled: boolean;
+  processedStation: string | null;
+  done: boolean;
+  run: CiaSnapshotRun | null;
+}> {
+  const base = String(env.OPS_PULSE_URL ?? '').trim().replace(/\/$/, '');
+  const key = String(env.ADMIN_API_KEY ?? '').trim();
+  if (!base || !key) {
+    return { handled: false, processedStation: null, done: false, run: null };
+  }
+  try {
+    const response = await fetch(`${base}/api/internal/cia-snapshot/continue`, {
+      method: 'POST',
+      headers: {
+        'x-admin-key': key,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(runId ? { runId } : {}),
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      console.error(`CIA Ops Pulse continue failed (${response.status}): ${text.slice(0, 240)}`);
+      return { handled: false, processedStation: null, done: false, run: null };
+    }
+    let body: Record<string, unknown> = {};
+    try {
+      body = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      return { handled: true, processedStation: null, done: false, run: null };
+    }
+    const runRaw = body.run && typeof body.run === 'object' ? (body.run as { id?: string }) : null;
+    const store = createCiaSnapshotStore(env);
+    const run = runRaw?.id ? await store.getRun(String(runRaw.id)) : await store.getActiveRunningRun();
+    return {
+      handled: true,
+      processedStation: body.processedStation == null ? null : String(body.processedStation),
+      done: Boolean(body.done),
+      run,
+    };
+  } catch (err) {
+    console.error('CIA Ops Pulse continue request failed', err);
+    return { handled: false, processedStation: null, done: false, run: null };
+  }
 }

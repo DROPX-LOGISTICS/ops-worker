@@ -22,10 +22,12 @@ BUSINESS_DAY_START_HOUR_IST = "5"
 DATA_PROVIDER = "amazon"
 AMAZON_LOGIN_STATION_CODE = "TIRC"
 PUBLIC_WORKER_URL = "https://cash-recon-worker.withered-voice-1c40.workers.dev"
+# Cron uses this BFF so overnight matches Update numbers (~1 station / 3 min).
+OPS_PULSE_URL = "https://dropx-partner-ops-pulse.onrender.com"
 # Optional: WORKFORCE_BASE_URL / WORKFORCE_COMPANY_ID (defaults in src/config.ts)
 
-# CIA snapshots: daily start at 06:00 IST (00:30 UTC). Ticker every 3 minutes
-# fetches one 7-day window for one station in-process (no nested self-fetch).
+# CIA snapshots: daily 06:00 IST. Ticker every 3 minutes asks Ops Pulse to
+# refresh one full station (same BFF path as Update numbers).
 [triggers]
 crons = ["30 0 * * *", "*/3 * * * *"]
 
@@ -51,6 +53,7 @@ BUSINESS_DAY_START_HOUR_IST = "5"
 DATA_PROVIDER = "amazon"
 AMAZON_LOGIN_STATION_CODE = "TIRC"
 PUBLIC_WORKER_URL = "https://cash-recon-worker.withered-voice-1c40.workers.dev"
+OPS_PULSE_URL = "https://dropx-partner-ops-pulse.onrender.com"
 
 [env.staging.triggers]
 crons = ["30 0 * * *", "*/3 * * * *"]

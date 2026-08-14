@@ -44,9 +44,14 @@ export interface Env {
   /**
    * Public base URL of this Worker (no trailing slash), e.g.
    * https://cash-recon-worker.withered-voice-1c40.workers.dev
-   * Used so CIA refresh/ticker can self-fetch date chunks (fresh CPU each call).
    */
   PUBLIC_WORKER_URL?: string;
+  /**
+   * Ops Pulse / partner dashboard origin. Cron POSTs
+   * /api/internal/cia-snapshot/continue so overnight uses the same BFF
+   * chunked path as Update numbers.
+   */
+  OPS_PULSE_URL?: string;
 }
 
 // ---------------------------------------------------------------------------
