@@ -24,8 +24,8 @@ AMAZON_LOGIN_STATION_CODE = "TIRC"
 PUBLIC_WORKER_URL = "https://cash-recon-worker.withered-voice-1c40.workers.dev"
 # Optional: WORKFORCE_BASE_URL / WORKFORCE_COMPANY_ID (defaults in src/config.ts)
 
-# CIA snapshots: daily start at 06:00 IST (00:30 UTC) + 3-minute ticker that
-# advances the active run one station per invocation (Free-plan subrequest cap).
+# CIA snapshots: daily start at 06:00 IST (00:30 UTC). Ticker every 3 minutes
+# fetches one 7-day window for one station in-process (no nested self-fetch).
 [triggers]
 crons = ["30 0 * * *", "*/3 * * * *"]
 

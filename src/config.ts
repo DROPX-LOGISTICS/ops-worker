@@ -102,8 +102,14 @@ export const CIA_PROCESSING_MARKER = '__PROCESSING__';
  */
 export const CIA_RETRY_PENDING_MARKER = '__RETRY_PENDING__';
 
+/**
+ * Marker written after a cron tick saved one 7-day chunk and more chunks remain.
+ * The next ticker may claim immediately (not an in-flight fetch).
+ */
+export const CIA_CHUNK_PENDING_MARKER = '__CHUNK_PENDING__';
+
 /** Reclaim in-flight station claims older than this (ms). */
-export const CIA_PROCESSING_STALE_MS = 4 * 60 * 1000;
+export const CIA_PROCESSING_STALE_MS = 6 * 60 * 1000;
 
 /** TTL for read-API response caching (per-isolate). Identical requests within this window share one upstream round-trip. */
 export const API_CACHE_TTL_MS = 60_000;

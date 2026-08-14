@@ -1,8 +1,11 @@
-import type { Env, CiaStationPayload, CiaStationSummary, CiaSnapshotRun } from '../types';
+﻿import type { Env, CiaStationPayload, CiaStationSummary, CiaSnapshotRun, CiaStationSnapshot } from '../types';
 import {
   ALLOWED_STATIONS,
+  CIA_CHUNK_PENDING_MARKER,
   CIA_PROCESSING_MARKER,
+  CIA_PROCESSING_STALE_MS,
   CIA_RETRY_PENDING_MARKER,
+  CIA_REFRESH_CHUNK_DAYS,
   portalAccountKeyForStation,
 } from '../config';
 import { createCiaSnapshotStore } from '../store/factory';
@@ -10,7 +13,6 @@ import { createStationDataProvider } from '../providers/factory';
 import { ensureValidAmazonSession } from '../session/ensureSession';
 import { loadWorkforceRosterMap } from './workforceRoster';
 import { getCiaAnalysisWindow, mergeCiaStationPayloads, reconcileCashInAssociate, splitYmdRange } from './cashInAssociate';
-import { CIA_REFRESH_CHUNK_DAYS } from '../config';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -38,105 +40,72 @@ function stationList(): string[] {
   return [...ALLOWED_STATIONS].sort();
 }
 
-function isFinishedSnapshot(status: string, error: string | null | undefined): boolean {
-  return !(
-    status === 'error'
-    && (error === CIA_PROCESSING_MARKER || error === CIA_RETRY_PENDING_MARKER)
-  );
-}
-
 function isRetryPendingSnapshot(status: string, error: string | null | undefined): boolean {
   return status === 'error' && error === CIA_RETRY_PENDING_MARKER;
 }
 
+function isChunkPendingSnapshot(status: string, error: string | null | undefined): boolean {
+  return status === 'error' && error === CIA_CHUNK_PENDING_MARKER;
+}
+
+function isProcessingSnapshot(status: string, error: string | null | undefined): boolean {
+  return status === 'error' && error === CIA_PROCESSING_MARKER;
+}
+
+function isStaleFetchedAt(fetchedAt: string, nowMs = Date.now()): boolean {
+  const ts = Date.parse(fetchedAt);
+  if (!Number.isFinite(ts)) return true;
+  return nowMs - ts >= CIA_PROCESSING_STALE_MS;
+}
+
+function readChunkProgress(payload: CiaStationPayload | undefined): { nextIndex: number; parts: CiaStationPayload[] } {
+  const raw = payload?.chunkProgress;
+  const parts = Array.isArray(raw?.parts) ? raw.parts : [];
+  const nextIndex = Number(raw?.nextIndex ?? parts.length) || 0;
+  return { nextIndex, parts };
+}
+
+function payloadWithProgress(
+  fromDate: string,
+  toDate: string,
+  nextIndex: number,
+  parts: CiaStationPayload[],
+): CiaStationPayload {
+  const base = emptyPayload(fromDate, toDate);
+  return { ...base, chunkProgress: { nextIndex, parts } };
+}
+
 /**
- * Reconcile a multi-week window by self-fetching live-range chunks.
- * Each chunk runs in a separate Worker isolate (fresh CPU budget) so large
- * stations like ERSE do not hit Cloudflare Error 1102 on Free plan.
+ * One 7-day CIA window in this isolate (no nested Worker HTTP).
+ * Nested self-fetch via PUBLIC_WORKER_URL hits Cloudflare 1042/1102 on cron.
  */
-async function reconcileViaLiveChunks(
+async function reconcileOneChunkInProcess(
   env: Env,
   stationCode: string,
   fromDate: string,
   toDate: string,
+  workforceByTransporterId: Awaited<ReturnType<typeof loadWorkforceRosterMap>>['byTransporterId'],
 ): Promise<CiaStationPayload> {
-  const base = String(env.PUBLIC_WORKER_URL ?? '').trim().replace(/\/$/, '');
-  const adminKey = String(env.ADMIN_API_KEY ?? '').trim();
-  const chunks = splitYmdRange(fromDate, toDate, CIA_REFRESH_CHUNK_DAYS);
-
-  if (!base || !adminKey || chunks.length <= 1) {
-    const session = await ensureValidAmazonSession(env, {
-      stationCode,
-      triggeredBy: `cia-chunk-fallback:${stationCode}`,
-      notifyOnFailure: false,
-    });
-    if (!session.ok) {
-      throw new Error(session.error || `Amazon session failed (${session.code})`);
-    }
-    const provider = createStationDataProvider(env);
-    const roster = await loadWorkforceRosterMap(env, { accountKey: session.accountKey });
-    return reconcileCashInAssociate({
-      stationCode,
-      fromDate,
-      toDate,
-      startHourIst: Number(env.BUSINESS_DAY_START_HOUR_IST ?? '5') || 5,
-      provider,
-      auth: session.auth,
-      workforceByTransporterId: roster.byTransporterId,
-      alignDepositCycle: false,
-      includeRemittanceDetails: false,
-    });
+  const session = await ensureValidAmazonSession(env, {
+    stationCode,
+    triggeredBy: `cia-chunk:${stationCode}:${fromDate}`,
+    notifyOnFailure: false,
+  });
+  if (!session.ok) {
+    throw new Error(session.error || `Amazon session failed (${session.code})`);
   }
-
-  const parts: CiaStationPayload[] = [];
-  for (const chunk of chunks) {
-    const url = new URL(`${base}/api/admin/executive/cash-in-associate`);
-    url.searchParams.set('stationCode', stationCode);
-    url.searchParams.set('fromDate', chunk.from);
-    url.searchParams.set('toDate', chunk.to);
-
-    const response = await fetch(url.toString(), {
-      method: 'GET',
-      headers: {
-        'x-admin-key': adminKey,
-        Accept: 'application/json',
-      },
-    });
-    const text = await response.text();
-    if (!response.ok) {
-      const htmlish = /^\s*</.test(text) || /Worker exceeded resource limits/i.test(text);
-      throw new Error(
-        htmlish
-          ? `CIA chunk ${chunk.from}→${chunk.to} hit Worker resource limits`
-          : `CIA chunk ${chunk.from}→${chunk.to} failed (${response.status}): ${text.slice(0, 240)}`,
-      );
-    }
-    let body: Record<string, unknown>;
-    try {
-      body = JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      throw new Error(`CIA chunk ${chunk.from}→${chunk.to} returned non-JSON`);
-    }
-    const summaryRaw = (body.summary && typeof body.summary === 'object'
-      ? body.summary
-      : {}) as CiaStationSummary;
-    const windowRaw = (body.window && typeof body.window === 'object'
-      ? body.window
-      : {}) as { from?: string; to?: string };
-    parts.push({
-      window: {
-        from: String(windowRaw.from ?? chunk.from),
-        to: String(windowRaw.to ?? chunk.to),
-      },
-      summary: summaryRaw,
-      ledger: Array.isArray(body.ledger) ? (body.ledger as CiaStationPayload['ledger']) : [],
-      pendingDrivers: Array.isArray(body.pendingDrivers)
-        ? (body.pendingDrivers as CiaStationPayload['pendingDrivers'])
-        : [],
-    });
-  }
-
-  return mergeCiaStationPayloads(parts, { from: fromDate, to: toDate });
+  const provider = createStationDataProvider(env);
+  return reconcileCashInAssociate({
+    stationCode,
+    fromDate,
+    toDate,
+    startHourIst: Number(env.BUSINESS_DAY_START_HOUR_IST ?? '5') || 5,
+    provider,
+    auth: session.auth,
+    workforceByTransporterId,
+    alignDepositCycle: false,
+    includeRemittanceDetails: false,
+  });
 }
 
 async function fetchStationOnce(
@@ -144,17 +113,10 @@ async function fetchStationOnce(
   stationCode: string,
   fromDate: string,
   toDate: string,
-  _workforceByTransporterId: Awaited<ReturnType<typeof loadWorkforceRosterMap>>['byTransporterId'],
+  workforceByTransporterId: Awaited<ReturnType<typeof loadWorkforceRosterMap>>['byTransporterId'],
   options?: { includeRemittanceDetails?: boolean },
 ): Promise<{ payload: CiaStationPayload; accountKey: string }> {
   const accountKey = portalAccountKeyForStation(stationCode);
-  // Prefer chunked self-fetch for Free-plan CPU limits. Interactive refresh and
-  // ticker both use this path when PUBLIC_WORKER_URL is set.
-  if (String(env.PUBLIC_WORKER_URL ?? '').trim()) {
-    const payload = await reconcileViaLiveChunks(env, stationCode, fromDate, toDate);
-    return { payload, accountKey };
-  }
-
   const session = await ensureValidAmazonSession(env, {
     stationCode,
     triggeredBy: `cia-snapshot:${stationCode}`,
@@ -173,8 +135,8 @@ async function fetchStationOnce(
     startHourIst,
     provider,
     auth: session.auth,
-    workforceByTransporterId: _workforceByTransporterId,
-    includeRemittanceDetails: options?.includeRemittanceDetails ?? true,
+    workforceByTransporterId,
+    includeRemittanceDetails: options?.includeRemittanceDetails ?? false,
   });
   return { payload, accountKey };
 }
@@ -221,35 +183,64 @@ export interface CiaNextStationResult {
   done: boolean;
 }
 
-function pickNextStationCode(
-  stations: string[],
-  byCode: Map<string, { status: string; error: string | null }>,
-): string | null {
+type SnapshotByCode = Map<string, CiaStationSnapshot>;
+
+/** Cron: finish the current station's remaining weeks before starting another. */
+function pickNextStationForCron(stations: string[], byCode: SnapshotByCode): string | null {
   return (
     stations.find((code) => {
       const snap = byCode.get(code);
-      return !snap;
+      return Boolean(snap && isChunkPendingSnapshot(snap.status, snap.error));
     })
-    ?? stations.find((code) => {
-      const snap = byCode.get(code);
-      return Boolean(snap && snap.status === 'error' && snap.error === CIA_PROCESSING_MARKER);
-    })
+    ?? stations.find((code) => !byCode.get(code))
     ?? stations.find((code) => {
       const snap = byCode.get(code);
       return Boolean(snap && isRetryPendingSnapshot(snap.status, snap.error));
+    })
+    ?? stations.find((code) => {
+      const snap = byCode.get(code);
+      return Boolean(
+        snap
+        && isProcessingSnapshot(snap.status, snap.error)
+        && isStaleFetchedAt(snap.fetchedAt),
+      );
     })
     ?? null
   );
 }
 
 /**
- * Return the next station that still needs Amazon data for the active run,
- * without fetching. Used by Ops Pulse so it can refresh via the proven BFF
- * chunked path (same as the row Refresh button).
+ * BFF: take a station the cron is not currently fetching.
+ * Skip in-flight processing and week-chunk progress so row/network UI
+ * does not race the ticker.
+ */
+function pickNextStationForBff(stations: string[], byCode: SnapshotByCode): string | null {
+  return (
+    stations.find((code) => !byCode.get(code))
+    ?? stations.find((code) => {
+      const snap = byCode.get(code);
+      return Boolean(snap && isRetryPendingSnapshot(snap.status, snap.error));
+    })
+    ?? stations.find((code) => {
+      const snap = byCode.get(code);
+      return Boolean(
+        snap
+        && isProcessingSnapshot(snap.status, snap.error)
+        && isStaleFetchedAt(snap.fetchedAt),
+      );
+    })
+    ?? null
+  );
+}
+/**
+ * Return the next station for Ops Pulse BFF (no Amazon fetch).
+ * Pass claim=true so the UI owns the station before chunked refresh;
+ * cron will not steal it into a retry marker.
  */
 export async function peekNextCiaStation(
   env: Env,
   runId?: string,
+  options?: { claim?: boolean },
 ): Promise<CiaNextStationResult> {
   const store = createCiaSnapshotStore(env);
   const run = runId ? await store.getRun(runId) : await store.getActiveRunningRun();
@@ -260,21 +251,44 @@ export async function peekNextCiaStation(
   const stations = stationList();
   const snapshots = await store.listStationSnapshots(run.id);
   const byCode = new Map(snapshots.map((s) => [s.stationCode, s]));
-  const nextStation = pickNextStationCode(stations, byCode);
+  const nextStation = pickNextStationForBff(stations, byCode);
 
   if (!nextStation) {
-    await finalizeFromSnapshots(env, run.id, stations.length);
-    return { run: await store.getRun(run.id), stationCode: null, done: true };
+    const cronOwns = stations.some((code) => {
+      const snap = byCode.get(code);
+      return Boolean(
+        snap
+        && (
+          isChunkPendingSnapshot(snap.status, snap.error)
+          || (isProcessingSnapshot(snap.status, snap.error) && !isStaleFetchedAt(snap.fetchedAt))
+        ),
+      );
+    });
+    if (!cronOwns) {
+      await finalizeFromSnapshots(env, run.id, stations.length);
+    }
+    return { run: await store.getRun(run.id), stationCode: null, done: !cronOwns };
+  }
+
+  if (options?.claim) {
+    const claimed = await store.tryClaimStation({
+      runId: run.id,
+      stationCode: nextStation,
+      accountKey: portalAccountKeyForStation(nextStation),
+      windowFrom: run.windowFrom,
+      windowTo: run.windowTo,
+    });
+    if (!claimed) {
+      return { run, stationCode: null, done: false };
+    }
   }
 
   return { run, stationCode: nextStation, done: false };
 }
 
 /**
- * Process exactly one unfinished station of the active running run.
- * Selection is based on missing/stale snapshots (not a fragile index alone),
- * so overlapping cron + continue ticks cannot skip stations when a Worker dies
- * mid-fetch. Counters are always recounted from finished snapshots.
+ * Cron tick: fetch exactly one 7-day chunk in this isolate, then stop.
+ * After all weeks for a station are in, merge and mark ok.
  */
 export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<CiaTickResult> {
   const store = createCiaSnapshotStore(env);
@@ -286,7 +300,7 @@ export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<
   const stations = stationList();
   const snapshots = await store.listStationSnapshots(run.id);
   const byCode = new Map(snapshots.map((s) => [s.stationCode, s]));
-  const nextStation = pickNextStationCode(stations, byCode);
+  const nextStation = pickNextStationForCron(stations, byCode);
 
   if (!nextStation) {
     await finalizeFromSnapshots(env, run.id, stations.length);
@@ -302,50 +316,112 @@ export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<
     windowTo: run.windowTo,
   });
   if (!claimed) {
-    // Another tick owns this station (or just finished it). Don't process two at once.
     return { run, processedStation: null, done: false };
   }
 
+  const claimedSnap = await store.getStationSnapshot(run.id, nextStation);
+  const chunks = splitYmdRange(run.windowFrom, run.windowTo, CIA_REFRESH_CHUNK_DAYS);
+  const progress = readChunkProgress(claimedSnap?.payload);
+  const index = Math.min(progress.nextIndex, chunks.length);
+  const parts = progress.parts.slice(0, index);
+
+  if (chunks.length === 0 || index >= chunks.length) {
+    if (parts.length > 0) {
+      const merged = mergeCiaStationPayloads(parts, { from: run.windowFrom, to: run.windowTo });
+      await store.upsertStationSnapshot({
+        runId: run.id,
+        stationCode: nextStation,
+        accountKey,
+        status: 'ok',
+        summary: merged.summary,
+        payload: merged,
+      });
+    }
+    const counters = await store.syncRunCountersFromSnapshots(run.id);
+    const done = counters.finishedCount >= stations.length && counters.inFlightCount === 0;
+    if (done) await finalizeFromSnapshots(env, run.id, stations.length);
+    return { run: await store.getRun(run.id), processedStation: nextStation, done };
+  }
+
+  const chunk = chunks[index];
+  if (!chunk) {
+    const counters = await store.syncRunCountersFromSnapshots(run.id);
+    const done = counters.finishedCount >= stations.length && counters.inFlightCount === 0;
+    if (done) await finalizeFromSnapshots(env, run.id, stations.length);
+    return { run: await store.getRun(run.id), processedStation: nextStation, done };
+  }
   const roster = await loadWorkforceRosterMap(env);
-  const result = await fetchStationWithRetry(
-    env,
-    nextStation,
-    run.windowFrom,
-    run.windowTo,
-    roster.byTransporterId,
-  );
 
-  const prior = byCode.get(nextStation);
-  const wasRetry = Boolean(prior && isRetryPendingSnapshot(prior.status, prior.error));
-
-  if (result.ok) {
+  try {
+    const part = await reconcileOneChunkInProcess(
+      env,
+      nextStation,
+      chunk.from,
+      chunk.to,
+      roster.byTransporterId,
+    );
+    const latestSnap = await store.getStationSnapshot(run.id, nextStation);
+    if (latestSnap?.status === 'ok') {
+      const counters = await store.syncRunCountersFromSnapshots(run.id);
+      const done = counters.finishedCount >= stations.length && counters.inFlightCount === 0;
+      if (done) await finalizeFromSnapshots(env, run.id, stations.length);
+      return { run: await store.getRun(run.id), processedStation: nextStation, done };
+    }
+    const nextParts = [...parts, part];
+    const nextIndex = index + 1;
+    if (nextIndex >= chunks.length) {
+      const merged = mergeCiaStationPayloads(nextParts, {
+        from: run.windowFrom,
+        to: run.windowTo,
+      });
+      await store.upsertStationSnapshot({
+        runId: run.id,
+        stationCode: nextStation,
+        accountKey,
+        status: 'ok',
+        summary: merged.summary,
+        payload: merged,
+      });
+    } else {
+      const pending = payloadWithProgress(run.windowFrom, run.windowTo, nextIndex, nextParts);
+      await store.upsertStationSnapshot({
+        runId: run.id,
+        stationCode: nextStation,
+        accountKey,
+        status: 'error',
+        error: CIA_CHUNK_PENDING_MARKER,
+        summary: pending.summary,
+        payload: pending,
+      });
+    }
+  } catch (err) {
+    const latestSnap = await store.getStationSnapshot(run.id, nextStation);
+    if (latestSnap?.status === 'ok') {
+      const counters = await store.syncRunCountersFromSnapshots(run.id);
+      const done = counters.finishedCount >= stations.length && counters.inFlightCount === 0;
+      if (done) await finalizeFromSnapshots(env, run.id, stations.length);
+      return { run: await store.getRun(run.id), processedStation: nextStation, done };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`CIA chunk ${nextStation} ${chunk.from}->${chunk.to} failed`, err);
+    const wasRetry = Boolean(
+      claimedSnap && isRetryPendingSnapshot(claimedSnap.status, claimedSnap.error),
+    );
+    const pending = payloadWithProgress(run.windowFrom, run.windowTo, index, parts);
     await store.upsertStationSnapshot({
       runId: run.id,
       stationCode: nextStation,
-      accountKey: result.accountKey,
-      status: 'ok',
-      summary: result.payload.summary,
-      payload: result.payload,
-    });
-  } else {
-    const payload = emptyPayload(run.windowFrom, run.windowTo);
-    await store.upsertStationSnapshot({
-      runId: run.id,
-      stationCode: nextStation,
-      accountKey: result.accountKey,
+      accountKey,
       status: 'error',
-      error: wasRetry ? result.error : CIA_RETRY_PENDING_MARKER,
-      summary: payload.summary,
-      payload,
+      error: wasRetry ? message : CIA_RETRY_PENDING_MARKER,
+      summary: pending.summary,
+      payload: pending,
     });
   }
 
   const counters = await store.syncRunCountersFromSnapshots(run.id);
-  const done =
-    counters.finishedCount >= stations.length && counters.inFlightCount === 0;
-  if (done) {
-    await finalizeFromSnapshots(env, run.id, stations.length);
-  }
+  const done = counters.finishedCount >= stations.length && counters.inFlightCount === 0;
+  if (done) await finalizeFromSnapshots(env, run.id, stations.length);
 
   return {
     run: await store.getRun(run.id),
@@ -536,7 +612,6 @@ export async function refreshCiaStation(
   const run = await pickRunForSingleStationSave(store, window, fullCount);
 
   const roster = await loadWorkforceRosterMap(env);
-  // Chunked via PUBLIC_WORKER_URL when set (fresh CPU per live-range chunk).
   const result = await fetchStationWithRetry(
     env,
     code,
@@ -576,21 +651,28 @@ export async function refreshCiaStation(
   return { runId: run.id, snapshotStatus: 'error', error: result.error };
 }
 
-/** Daily cron (06:00 IST): start/resume the run. Overnight ticker (every 3 min)
- * advances stations when nobody has Ops Pulse open. The UI uses a ~15s gap. */
+/** Daily cron (06:00 IST): start/resume the run, then fetch the first 7-day chunk. */
 export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
   const { run } = await startCiaSnapshotRun(env);
-  console.log(`CIA daily run ${run.id} status=${run.status}`);
-  return run;
+  try {
+    const tick = await processCiaSnapshotTick(env, run.id);
+    console.log(
+      `CIA daily run ${run.id} station=${tick.processedStation ?? 'none'} done=${tick.done}`,
+    );
+    return (await createCiaSnapshotStore(env).getRun(run.id)) ?? run;
+  } catch (err) {
+    console.error('CIA daily first-chunk kick failed', err);
+    return run;
+  }
 }
 
-/** Ticker cron (every 3 min): advance the active run by one station. */
+/** Ticker cron (every 3 min): one 7-day chunk of the next unfinished station. */
 export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
   const tick = await processCiaSnapshotTick(env);
-  if (!tick.processedStation && tick.run?.status === 'running' && !tick.done) {
-    console.warn(
-      `CIA ticker idle for run ${tick.run.id} (claim skipped or no pending station)`,
-    );
+  if (tick.processedStation) {
+    console.log(`CIA tick station=${tick.processedStation} done=${tick.done}`);
+  } else if (tick.run?.status === 'running' && !tick.done) {
+    console.warn(`CIA ticker idle for run ${tick.run.id}`);
   }
   return tick;
 }

@@ -3,6 +3,7 @@ import type { Env, CiaStationSummary, CiaStationPayload, CiaSnapshotRun, CiaStat
 import {
   ALLOWED_STATIONS,
   API_CACHE_TTL_MS,
+  CIA_CHUNK_PENDING_MARKER,
   CIA_LIVE_RANGE_CACHE_TTL_MS,
   CIA_PROCESSING_MARKER,
   CIA_RETRY_PENDING_MARKER,
@@ -86,7 +87,7 @@ function isValidYmd(value: string): boolean {
 
 function isUsableStationSnap(snap: CiaStationSnapshot | null): snap is CiaStationSnapshot {
   if (!snap) return false;
-  if (snap.error === CIA_PROCESSING_MARKER || snap.error === CIA_RETRY_PENDING_MARKER) return false;
+  if (snap.error === CIA_PROCESSING_MARKER || snap.error === CIA_RETRY_PENDING_MARKER || snap.error === CIA_CHUNK_PENDING_MARKER) return false;
   return true;
 }
 
@@ -615,10 +616,12 @@ export async function ciaRefreshHandler(c: Context<{ Bindings: Env }>) {
  */
 export async function ciaNextStationHandler(c: Context<{ Bindings: Env }>) {
   let runId: string | undefined;
+  let claim = c.req.query('claim') === '1' || c.req.query('claim') === 'true';
   try {
     if (c.req.method === 'POST') {
-      const body = (await c.req.json()) as { runId?: string };
+      const body = (await c.req.json()) as { runId?: string; claim?: boolean };
       if (body?.runId?.trim()) runId = body.runId.trim();
+      if (body?.claim) claim = true;
     } else {
       const q = c.req.query('runId')?.trim();
       if (q) runId = q;
@@ -627,7 +630,7 @@ export async function ciaNextStationHandler(c: Context<{ Bindings: Env }>) {
     /* empty body = active run */
   }
 
-  const peek = await peekNextCiaStation(c.env, runId);
+  const peek = await peekNextCiaStation(c.env, runId, { claim });
   const latest = peek.run;
   const refreshProgress = await buildRefreshProgress(c.env, latest);
 

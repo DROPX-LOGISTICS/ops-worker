@@ -113,9 +113,9 @@ const CIA_DAILY_CRON = '30 0 * * *';
 
 /**
  * Cash In Associate snapshots:
- * - 00:30 UTC (06:00 IST): start/resume the daily run + roster sync.
- * - Every 3 minutes: advance the active run by exactly one station, keeping
- *   each invocation inside the Workers Free 50-subrequest budget.
+ * - 00:30 UTC (06:00 IST): start/resume the daily run + first 7-day chunk.
+ * - Every 3 minutes: one 7-day chunk of the next unfinished station (in-process,
+ *   no nested Worker HTTP — that path hits Cloudflare 1042).
  */
 async function scheduled(
   event: ScheduledEvent,

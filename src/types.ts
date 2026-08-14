@@ -399,11 +399,18 @@ export interface CiaPendingDriver {
   shipments: RemittanceLedgerShipment[];
 }
 
+export interface CiaChunkProgress {
+  nextIndex: number;
+  parts: CiaStationPayload[];
+}
+
 export interface CiaStationPayload {
   window: { from: string; to: string };
   summary: CiaStationSummary;
   ledger: RemittanceLedgerDay[];
   pendingDrivers: CiaPendingDriver[];
+  /** Cron-only: 7-day parts already fetched for this station. */
+  chunkProgress?: CiaChunkProgress;
 }
 
 export interface CiaSnapshotRun {

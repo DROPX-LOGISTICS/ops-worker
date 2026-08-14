@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import {
+  CIA_CHUNK_PENDING_MARKER,
   CIA_PROCESSING_MARKER,
   CIA_PROCESSING_STALE_MS,
   CIA_RETRY_PENDING_MARKER,
@@ -101,6 +102,16 @@ function isProcessingSnapshot(row: Pick<StationRow, 'error' | 'status'> | CiaSta
 
 function isRetryPendingSnapshot(row: Pick<StationRow, 'error' | 'status'> | CiaStationSnapshot): boolean {
   return row.status === 'error' && row.error === CIA_RETRY_PENDING_MARKER;
+}
+
+function isChunkPendingSnapshot(row: Pick<StationRow, 'error' | 'status'> | CiaStationSnapshot): boolean {
+  return row.status === 'error' && row.error === CIA_CHUNK_PENDING_MARKER;
+}
+
+function isClaimableSnapshot(row: Pick<CiaStationSnapshot, 'error' | 'status' | 'fetchedAt'>): boolean {
+  if (isRetryPendingSnapshot(row) || isChunkPendingSnapshot(row)) return true;
+  if (isProcessingSnapshot(row) && isStaleFetchedAt(row.fetchedAt)) return true;
+  return false;
 }
 
 function isStaleFetchedAt(fetchedAt: string, nowMs = Date.now()): boolean {
@@ -342,8 +353,7 @@ export class CiaSnapshotStore {
   }): Promise<boolean> {
     const existing = await this.getStationSnapshot(args.runId, args.stationCode);
     if (existing) {
-      if (!isProcessingSnapshot(existing) && !isRetryPendingSnapshot(existing)) return false;
-      if (isProcessingSnapshot(existing) && !isStaleFetchedAt(existing.fetchedAt)) return false;
+      if (!isClaimableSnapshot(existing)) return false;
       const { data, error } = await this.client
         .from('cia_station_snapshots')
         .update({
@@ -351,13 +361,6 @@ export class CiaSnapshotStore {
           status: 'error',
           error: CIA_PROCESSING_MARKER,
           fetched_at: new Date().toISOString(),
-          summary: emptySummary(),
-          payload: {
-            window: { from: args.windowFrom, to: args.windowTo },
-            summary: emptySummary(),
-            ledger: [],
-            pendingDrivers: [],
-          },
         })
         .eq('run_id', args.runId)
         .eq('station_code', args.stationCode)
@@ -411,7 +414,7 @@ export class CiaSnapshotStore {
     let retryQueuedCount = 0;
     let processingCount = 0;
     for (const s of snaps) {
-      if (isProcessingSnapshot(s)) {
+      if (isProcessingSnapshot(s) || isChunkPendingSnapshot(s)) {
         inFlightCount += 1;
         processingCount += 1;
         continue;
@@ -545,7 +548,9 @@ export class CiaSnapshotStore {
   /** Finished snapshots only (excludes in-flight and queued-retry markers). */
   async listFinishedStationSnapshots(runId: string): Promise<CiaStationSnapshot[]> {
     const all = await this.listStationSnapshots(runId);
-    return all.filter((s) => !isProcessingSnapshot(s) && !isRetryPendingSnapshot(s));
+    return all.filter(
+      (s) => !isProcessingSnapshot(s) && !isRetryPendingSnapshot(s) && !isChunkPendingSnapshot(s),
+    );
   }
 
   /**
@@ -570,7 +575,7 @@ export class CiaSnapshotStore {
 
     const rows = ((data as StationRow[] | null) ?? [])
       .map(toStation)
-      .filter((s) => !isProcessingSnapshot(s));
+      .filter((s) => !isProcessingSnapshot(s) && !isRetryPendingSnapshot(s) && !isChunkPendingSnapshot(s));
     const snap = rows[0];
     if (!snap) return null;
     const run = await this.getRun(snap.runId);
