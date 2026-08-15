@@ -398,6 +398,23 @@ export class CiaSnapshotStore {
     return false;
   }
 
+  /** Keep a PROCESSING claim alive while a long BFF chunked refresh is still working. */
+  async touchProcessingClaim(runId: string, stationCode: string): Promise<boolean> {
+    const { data, error } = await this.client
+      .from('cia_station_snapshots')
+      .update({ fetched_at: new Date().toISOString() })
+      .eq('run_id', runId)
+      .eq('station_code', stationCode)
+      .eq('status', 'error')
+      .eq('error', CIA_PROCESSING_MARKER)
+      .select('station_code');
+    if (error) {
+      console.error('CiaSnapshotStore.touchProcessingClaim failed', error);
+      return false;
+    }
+    return (data?.length ?? 0) > 0;
+  }
+
   /** Recount finished snapshots and sync run counters (excludes in-flight / queued-retry markers). */
   async syncRunCountersFromSnapshots(runId: string): Promise<{
     stationsOk: number;

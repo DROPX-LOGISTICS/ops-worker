@@ -24,6 +24,7 @@ import {
   releaseCiaStationClaim,
   saveCiaStationPayload,
   startCiaSnapshotRun,
+  touchCiaStationClaim,
 } from '../services/ciaSnapshotRunner';
 
 async function buildRefreshProgress(env: Env, run: CiaSnapshotRun | null) {
@@ -675,6 +676,34 @@ export async function ciaReleaseClaimHandler(c: Context<{ Bindings: Env }>) {
     stationCode,
     run: latest,
     refreshProgress,
+  });
+}
+
+/**
+ * POST /api/admin/internal/cia-snapshot/touch-claim
+ * Bump fetched_at on a PROCESSING claim so a long chunked refresh is not
+ * stolen after the stale timeout.
+ */
+export async function ciaTouchClaimHandler(c: Context<{ Bindings: Env }>) {
+  let runId: string | undefined;
+  let stationCode = '';
+  try {
+    const body = (await c.req.json()) as { runId?: string; stationCode?: string };
+    if (body?.runId?.trim()) runId = body.runId.trim();
+    stationCode = String(body?.stationCode ?? '').trim().toUpperCase();
+  } catch {
+    /* empty */
+  }
+  if (!stationCode) {
+    return c.json({ error: 'stationCode is required', code: 'VALIDATION' }, 400);
+  }
+
+  const result = await touchCiaStationClaim(c.env, { runId, stationCode });
+  return c.json({
+    status: 'ok',
+    touched: result.touched,
+    stationCode,
+    run: result.run,
   });
 }
 

@@ -211,15 +211,21 @@ function pickNextStationForCron(stations: string[], byCode: SnapshotByCode): str
 
 /**
  * BFF: take a station the cron is not currently fetching.
- * Skip in-flight processing and week-chunk progress so row/network UI
- * does not race the ticker.
+ * Skip only a fresh in-flight PROCESSING claim. Chunk/retry markers are
+ * unfinished work and must be drained by the same path as Update numbers.
  */
 function pickNextStationForBff(stations: string[], byCode: SnapshotByCode): string | null {
   return (
     stations.find((code) => !byCode.get(code))
     ?? stations.find((code) => {
       const snap = byCode.get(code);
-      return Boolean(snap && isRetryPendingSnapshot(snap.status, snap.error));
+      return Boolean(
+        snap
+        && (
+          isRetryPendingSnapshot(snap.status, snap.error)
+          || isChunkPendingSnapshot(snap.status, snap.error)
+        ),
+      );
     })
     ?? stations.find((code) => {
       const snap = byCode.get(code);
@@ -231,6 +237,17 @@ function pickNextStationForBff(stations: string[], byCode: SnapshotByCode): stri
     })
     ?? null
   );
+}
+
+function hasUnfinishedStationWork(stations: string[], byCode: SnapshotByCode): boolean {
+  return stations.some((code) => {
+    const snap = byCode.get(code);
+    if (!snap) return true;
+    if (isRetryPendingSnapshot(snap.status, snap.error)) return true;
+    if (isChunkPendingSnapshot(snap.status, snap.error)) return true;
+    if (isProcessingSnapshot(snap.status, snap.error) && !isStaleFetchedAt(snap.fetchedAt)) return true;
+    return false;
+  });
 }
 /**
  * Return the next station for Ops Pulse BFF (no Amazon fetch).
@@ -254,20 +271,11 @@ export async function peekNextCiaStation(
   const nextStation = pickNextStationForBff(stations, byCode);
 
   if (!nextStation) {
-    const cronOwns = stations.some((code) => {
-      const snap = byCode.get(code);
-      return Boolean(
-        snap
-        && (
-          isChunkPendingSnapshot(snap.status, snap.error)
-          || (isProcessingSnapshot(snap.status, snap.error) && !isStaleFetchedAt(snap.fetchedAt))
-        ),
-      );
-    });
-    if (!cronOwns) {
+    const unfinished = hasUnfinishedStationWork(stations, byCode);
+    if (!unfinished) {
       await finalizeFromSnapshots(env, run.id, stations.length);
     }
-    return { run: await store.getRun(run.id), stationCode: null, done: !cronOwns };
+    return { run: await store.getRun(run.id), stationCode: null, done: !unfinished };
   }
 
   if (options?.claim) {
@@ -287,9 +295,26 @@ export async function peekNextCiaStation(
 }
 
 /**
+ * Keep a PROCESSING claim alive while a long chunked refresh is still running.
+ */
+export async function touchCiaStationClaim(
+  env: Env,
+  args: { runId?: string; stationCode: string },
+): Promise<{ touched: boolean; run: CiaSnapshotRun | null }> {
+  const store = createCiaSnapshotStore(env);
+  const run = args.runId ? await store.getRun(args.runId) : await store.getActiveRunningRun();
+  if (!run || run.status !== 'running') {
+    return { touched: false, run: run ?? null };
+  }
+  const code = args.stationCode.trim().toUpperCase();
+  const touched = await store.touchProcessingClaim(run.id, code);
+  return { touched, run };
+}
+
+/**
  * BFF hit Cloudflare 1102 / abort after claiming a station. Release the
  * in-flight marker so the next continue can retry immediately instead of
- * waiting for the 6-minute stale timeout.
+ * waiting for the stale timeout.
  */
 export async function releaseCiaStationClaim(
   env: Env,
@@ -335,8 +360,11 @@ export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<
   const nextStation = pickNextStationForCron(stations, byCode);
 
   if (!nextStation) {
-    await finalizeFromSnapshots(env, run.id, stations.length);
-    return { run: await store.getRun(run.id), processedStation: null, done: true };
+    const unfinished = hasUnfinishedStationWork(stations, byCode);
+    if (!unfinished) {
+      await finalizeFromSnapshots(env, run.id, stations.length);
+    }
+    return { run: await store.getRun(run.id), processedStation: null, done: !unfinished };
   }
 
   const accountKey = portalAccountKeyForStation(nextStation);
@@ -510,13 +538,19 @@ export async function startCiaSnapshotRun(
   const forceNew = Boolean(options?.forceNew);
   const existing = await store.getActiveRunningRun();
   if (existing) {
-    if (existing.asOfDate === window.asOfDate && !forceNew) {
-      // Heal counters / pick up any stations skipped by a killed tick.
+    if (existing.asOfDate === window.asOfDate) {
       const counters = await store.syncRunCountersFromSnapshots(existing.id);
-      if (counters.finishedCount >= stationList().length && counters.inFlightCount === 0) {
-        await finalizeFromSnapshots(env, existing.id, stationList().length);
+      const total = stationList().length;
+      const complete = counters.finishedCount >= total && counters.inFlightCount === 0;
+      if (complete) {
+        await finalizeFromSnapshots(env, existing.id, total);
+        if (!forceNew) {
+          return { run: (await store.getRun(existing.id)) ?? existing, resumed: true };
+        }
+      } else {
+        // Never discard a same-day in-progress run (e.g. 37 ok, 1 in flight).
+        return { run: (await store.getRun(existing.id)) ?? existing, resumed: true };
       }
-      return { run: (await store.getRun(existing.id)) ?? existing, resumed: true };
     }
     const counters = await store.syncRunCountersFromSnapshots(existing.id);
     await store.finalizeRun({
@@ -708,7 +742,7 @@ export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
 /** Ticker: one full station via Ops Pulse (same as Update numbers), else one 7-day chunk. */
 export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
   const viaPulse = await continueViaOpsPulse(env);
-  if (viaPulse.handled) {
+  if (viaPulse.handled && (viaPulse.processedStation || viaPulse.done)) {
     const run = viaPulse.run ?? (await createCiaSnapshotStore(env).getActiveRunningRun());
     if (viaPulse.processedStation) {
       console.log(`CIA tick via Ops Pulse station=${viaPulse.processedStation} done=${viaPulse.done}`);

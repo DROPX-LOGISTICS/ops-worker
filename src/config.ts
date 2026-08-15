@@ -108,8 +108,12 @@ export const CIA_RETRY_PENDING_MARKER = '__RETRY_PENDING__';
  */
 export const CIA_CHUNK_PENDING_MARKER = '__CHUNK_PENDING__';
 
-/** Reclaim in-flight station claims older than this (ms). */
-export const CIA_PROCESSING_STALE_MS = 6 * 60 * 1000;
+/**
+ * Reclaim in-flight station claims older than this (ms).
+ * A full 31-day station refresh is several live-range chunks and often exceeds
+ * 6 minutes (ERSE-sized stations). Heartbeats bump fetched_at between chunks.
+ */
+export const CIA_PROCESSING_STALE_MS = 20 * 60 * 1000;
 
 /** TTL for read-API response caching (per-isolate). Identical requests within this window share one upstream round-trip. */
 export const API_CACHE_TTL_MS = 60_000;
