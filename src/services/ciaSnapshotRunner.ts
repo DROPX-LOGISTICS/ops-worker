@@ -464,8 +464,13 @@ export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<
     }
     const message = err instanceof Error ? err.message : String(err);
     console.error(`CIA chunk ${nextStation} ${chunk.from}->${chunk.to} failed`, err);
+    // `claimedSnap` was read after tryClaimStation overwrote the marker to
+    // PROCESSING, so it can never say RETRY_PENDING. Use the pre-claim state
+    // (`byCode`) — otherwise a station that keeps failing is re-queued forever,
+    // and because the picker is ordered it starves every station behind it.
+    const preClaimSnap = byCode.get(nextStation);
     const wasRetry = Boolean(
-      claimedSnap && isRetryPendingSnapshot(claimedSnap.status, claimedSnap.error),
+      preClaimSnap && isRetryPendingSnapshot(preClaimSnap.status, preClaimSnap.error),
     );
     const pending = payloadWithProgress(run.windowFrom, run.windowTo, index, parts);
     await store.upsertStationSnapshot({
