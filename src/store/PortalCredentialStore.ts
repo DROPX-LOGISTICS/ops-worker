@@ -240,6 +240,22 @@ export class PortalCredentialStore {
     return true;
   }
 
+  /**
+   * Keep the lock held for a cooldown after a failure that retrying cannot fix
+   * (Browser Rendering quota). `tryAcquireLoginLock` then refuses further
+   * logins until it expires, which is what stops a 38-station run from firing
+   * 38 doomed browser launches.
+   */
+  async holdLoginLock(error: string, accountKey: string, ttlSeconds: number): Promise<void> {
+    const key = normalizeAccountKey(accountKey);
+    const until = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+    const { error: dbError } = await this.client
+      .from('amazon_portal_credentials')
+      .update({ login_locked_until: until, last_login_error: error.slice(0, 1000) })
+      .eq('account_key', key);
+    if (dbError) console.error('PortalCredentialStore.holdLoginLock failed', dbError);
+  }
+
   async releaseLoginLock(
     result: { ok: true } | { ok: false; error: string },
     accountKey?: string,
