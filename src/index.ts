@@ -28,6 +28,7 @@ import {
   ciaTouchClaimHandler,
 } from './routes/cashInAssociate';
 import { ciaDailyCron, ciaTickerCron } from './services/ciaSnapshotRunner';
+import { dbDiagHandler } from './routes/dbDiag';
 import { listNotificationsHandler, acknowledgeNotificationHandler } from './routes/notifications';
 import {
   uploadWorkforceSessionHandler,
@@ -63,6 +64,12 @@ app.get('/api/stations', (c) => c.json({ stations: Array.from(ALLOWED_STATIONS) 
 
 // All Amazon-backed routes require x-admin-key.
 app.use('/api/admin/*', adminAuth);
+
+// Which Supabase project is wired up, and is its schema complete? Feature
+// endpoints degrade to empty results when a table is missing, so this is the
+// only place that separates "not migrated" from "migrated but no data yet".
+app.get('/api/admin/diag/db', dbDiagHandler);
+
 app.post('/api/admin/validate', validateHandler);
 app.post('/api/admin/session', uploadSessionHandler);
 app.get('/api/admin/session/status', sessionStatusHandler);

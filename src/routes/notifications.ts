@@ -14,7 +14,18 @@ export async function listNotificationsHandler(c: Context<{ Bindings: Env }>) {
 
   const { data, error } = await query;
   if (error) {
-    return c.json({ error: 'Failed to load notifications', code: 'NOTIFICATIONS_READ_FAILED' }, 502);
+    // Admin-only route, so pass the Postgres detail through — a swallowed
+    // message here is indistinguishable from an empty table.
+    console.error('listNotifications failed', error);
+    return c.json(
+      {
+        error: 'Failed to load notifications',
+        code: 'NOTIFICATIONS_READ_FAILED',
+        detail: error.message,
+        pgCode: error.code ?? null,
+      },
+      502,
+    );
   }
 
   return c.json({

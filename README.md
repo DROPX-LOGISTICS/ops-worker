@@ -62,6 +62,36 @@ Run `sql/schema.sql` in the Supabase SQL editor (`amazon_sessions`, overrides, n
 
 For Cash In Associate daily snapshots also run `sql/cash-in-associate-schema.sql` (and optionally `sql/api-response-cache-schema.sql`).
 
+### Pointing the worker at a different Supabase project
+
+Changing `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` does **not** carry the
+schema across. Every store degrades quietly when a table is absent — reads
+return empty and the dashboard shows "No Cash In Associate snapshot yet" — so a
+missing migration looks exactly like a database that simply has no data yet.
+
+After repointing, run `Report-auto-worker/sql/company-cutover.sql` in the new
+project. It creates every table both Workers need and is safe to re-run: it only
+adds missing objects and never drops or overwrites existing data. It ends with
+`notify pgrst, 'reload schema'`, which PostgREST needs before it will serve the
+new tables.
+
+Then confirm:
+
+```bash
+curl -H "x-admin-key: $ADMIN_API_KEY" https://<worker>/api/admin/diag/db
+```
+
+`GET /api/admin/diag/db` reports the project ref it is actually connected to,
+plus per-table existence and row counts. `schemaReady: false` with
+`PGRST205` errors means the cutover SQL has not run (or PostgREST has not
+reloaded). `schemaReady: true` with `ciaSnapshotRuns: 0` means the schema is
+fine and you just need a snapshot run.
+
+Note that the new project starts empty: the Amazon portal session, saved
+credentials and workforce roster do not travel with it. Upload a session
+(`POST /api/admin/session/refresh`) before the first CIA run, or every station
+will fail on authentication.
+
 ## Cash In Associate (CIA) snapshots
 
 Daily network reconcile of ageing cash (CIA + Cash At Station) vs bank deposits.
@@ -499,6 +529,9 @@ Manual cookie upload (`PUT /api/admin/workforce/session`) remains as fallback if
 
 - `GET /api/health` — liveness
 - `GET /api/stations` — allowlisted station codes
+- `GET /api/admin/diag/db` — connected Supabase project ref, per-table existence
+  and row counts. Use this first whenever a read endpoint returns empty or 404;
+  it separates "schema not migrated" from "migrated but no data yet".
 
 
 

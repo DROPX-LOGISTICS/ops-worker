@@ -235,16 +235,17 @@ export class CiaSnapshotStore {
       return { run: best, source: 'completed', progress: running };
     }
 
-    // No solid completed run yet — only then show in-progress stations.
+    // No solid completed run yet — show the in-progress run even before the
+    // first station finishes. Without this, a fresh company DB (all stations
+    // still on PROCESSING / RETRY markers) looks identical to "no snapshot",
+    // and the dashboard tells operators to wait for a cron that is already
+    // running.
     if (running) {
-      const finished = await this.listFinishedStationSnapshots(running.id);
-      if (finished.length > 0) {
-        return { run: running, source: 'running', progress: running };
-      }
+      return { run: running, source: 'running', progress: running };
     }
 
     const latest = await this.getLatestReadableRun();
-    return { run: latest, source: latest ? 'completed' : 'none', progress: running };
+    return { run: latest, source: latest ? 'completed' : 'none', progress: null };
   }
 
   /** Readable run for a specific as-of date (most recent finished if duplicates). */

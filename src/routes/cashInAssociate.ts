@@ -9,6 +9,7 @@ import {
   CIA_RETRY_PENDING_MARKER,
 } from '../config';
 import { createCiaSnapshotStore, createApiResponseCacheStore } from '../store/factory';
+import { isCiaSchemaReady } from './dbDiag';
 import { ValidationInputError } from '../errors';
 import { round2 } from '../utils/number';
 import { addDaysYmd, daysBetweenYmd, todayIstYmd } from '../utils/dateRange';
@@ -26,6 +27,25 @@ import {
   startCiaSnapshotRun,
   touchCiaStationClaim,
 } from '../services/ciaSnapshotRunner';
+
+/**
+ * An empty table and an absent table both surface as `null` from the store, so
+ * probe the schema before blaming the cron. Without this the dashboard tells
+ * operators to wait for a 06:00 run that cannot possibly write anything.
+ */
+async function noSnapshotBody(env: Env, message: string) {
+  if (await isCiaSchemaReady(env)) {
+    return { status: 'not_found', code: 'NO_CIA_SNAPSHOT', message };
+  }
+  return {
+    status: 'not_found',
+    code: 'CIA_SCHEMA_MISSING',
+    message:
+      'Cash In Associate tables are missing from the Supabase project this worker points at. '
+      + 'Run sql/company-cutover.sql in that project, then refresh. '
+      + 'GET /api/admin/diag/db shows which tables are absent.',
+  };
+}
 
 async function buildRefreshProgress(env: Env, run: CiaSnapshotRun | null) {
   if (!run) return null;
@@ -285,7 +305,7 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
 export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
   const shared = createApiResponseCacheStore(c.env);
   const { value, cacheHit } = await cachedJson<CiaReadResult>(
-    'cia:network:v4',
+    'cia:network:v5',
     API_CACHE_TTL_MS,
     async () => {
       const store = createCiaSnapshotStore(c.env);
@@ -293,12 +313,10 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
       if (!run) {
         return {
           kind: 'not_found',
-          body: {
-            status: 'not_found',
-            code: 'NO_CIA_SNAPSHOT',
-            message:
-              'No Cash In Associate snapshot yet. Wait for the 06:00 IST cron or POST refresh.',
-          },
+          body: await noSnapshotBody(
+            c.env,
+            'No Cash In Associate snapshot yet. Wait for the 06:00 IST cron or POST refresh.',
+          ),
         };
       }
 
@@ -403,11 +421,7 @@ export async function ciaDailyLedgerHandler(c: Context<{ Bindings: Env }>) {
       if (!run) {
         return {
           kind: 'not_found',
-          body: {
-            status: 'not_found',
-            code: 'NO_CIA_SNAPSHOT',
-            message: 'No Cash In Associate snapshot yet.',
-          },
+          body: await noSnapshotBody(c.env, 'No Cash In Associate snapshot yet.'),
         };
       }
 
