@@ -416,6 +416,31 @@ export class CiaSnapshotStore {
     return (data?.length ?? 0) > 0;
   }
 
+  /**
+   * Convert dead PROCESSING claims (no heartbeat within the stale window) into
+   * retry markers so the next continue can pick them immediately.
+   */
+  async reclaimStaleProcessingClaims(runId: string): Promise<number> {
+    const cutoff = new Date(Date.now() - CIA_PROCESSING_STALE_MS).toISOString();
+    const { data, error } = await this.client
+      .from('cia_station_snapshots')
+      .update({
+        status: 'error',
+        error: CIA_RETRY_PENDING_MARKER,
+        fetched_at: new Date().toISOString(),
+      })
+      .eq('run_id', runId)
+      .eq('status', 'error')
+      .eq('error', CIA_PROCESSING_MARKER)
+      .lt('fetched_at', cutoff)
+      .select('station_code');
+    if (error) {
+      console.error('CiaSnapshotStore.reclaimStaleProcessingClaims failed', error);
+      return 0;
+    }
+    return data?.length ?? 0;
+  }
+
   /** Recount finished snapshots and sync run counters (excludes in-flight / queued-retry markers). */
   async syncRunCountersFromSnapshots(runId: string): Promise<{
     stationsOk: number;

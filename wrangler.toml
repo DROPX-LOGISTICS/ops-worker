@@ -22,14 +22,15 @@ BUSINESS_DAY_START_HOUR_IST = "5"
 DATA_PROVIDER = "amazon"
 AMAZON_LOGIN_STATION_CODE = "TIRC"
 PUBLIC_WORKER_URL = "https://cash-recon-worker.withered-voice-1c40.workers.dev"
-# Cron uses this BFF so overnight matches Update numbers (~1 station / 3 min).
-OPS_PULSE_URL = "https://dropx-partner-ops-pulse.onrender.com"
+# Cron calls Ops Pulse BFF for chunked refresh (~1 station / 3 min when tab closed).
+# Must be always-on (Vercel). Render free spins down and background refresh stalls.
+OPS_PULSE_URL = "https://ops.dropxlogistics.com"
 # Optional: WORKFORCE_BASE_URL / WORKFORCE_COMPANY_ID (defaults in src/config.ts)
 
-# CIA snapshots: daily 06:00 IST. Ticker every 3 minutes asks Ops Pulse to
+# CIA snapshots: daily 06:00 IST. Ticker every minute asks Ops Pulse to
 # refresh one full station (same BFF path as Update numbers).
 [triggers]
-crons = ["30 0 * * *", "*/3 * * * *"]
+crons = ["30 0 * * *", "* * * * *"]
 
 # Secrets (Set locally via .dev.vars or production via 'wrangler secret put')
 # - SUPABASE_URL
@@ -53,10 +54,10 @@ BUSINESS_DAY_START_HOUR_IST = "5"
 DATA_PROVIDER = "amazon"
 AMAZON_LOGIN_STATION_CODE = "TIRC"
 PUBLIC_WORKER_URL = "https://cash-recon-worker.withered-voice-1c40.workers.dev"
-OPS_PULSE_URL = "https://dropx-partner-ops-pulse.onrender.com"
+OPS_PULSE_URL = "https://ops.dropxlogistics.com"
 
 [env.staging.triggers]
-crons = ["30 0 * * *", "*/3 * * * *"]
+crons = ["30 0 * * *", "* * * * *"]
 
 # Staging Secrets (Set via 'wrangler secret put --env staging')
 # - SUPABASE_URL

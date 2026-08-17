@@ -110,10 +110,18 @@ export const CIA_CHUNK_PENDING_MARKER = '__CHUNK_PENDING__';
 
 /**
  * Reclaim in-flight station claims older than this (ms).
- * A full 31-day station refresh is several live-range chunks and often exceeds
- * 6 minutes (ERSE-sized stations). Heartbeats bump fetched_at between chunks.
+ * A live station refresh heartbeats fetched_at between 7-day chunks. If no
+ * heartbeat arrives, the fetch died (Vercel kill, 1102, tab close) and the
+ * next peek/cron should retry instead of waiting 20 minutes.
  */
-export const CIA_PROCESSING_STALE_MS = 20 * 60 * 1000;
+export const CIA_PROCESSING_STALE_MS = 4 * 60 * 1000;
+
+/**
+ * Only one station may hold a fresh PROCESSING claim at a time.
+ * Cron + the open CIA page + overlapping continue calls used to claim dozens
+ * of stations, then die, leaving the UI in a 20-in-flight loop.
+ */
+export const CIA_MAX_IN_FLIGHT = 1;
 
 /** TTL for read-API response caching (per-isolate). Identical requests within this window share one upstream round-trip. */
 export const API_CACHE_TTL_MS = 60_000;

@@ -27,6 +27,7 @@ import {
   startCiaSnapshotRun,
   touchCiaStationClaim,
 } from '../services/ciaSnapshotRunner';
+import { readCiaTickerState } from '../services/ciaTickerState';
 
 /**
  * An empty table and an absent table both surface as `null` from the store, so
@@ -305,7 +306,7 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
 export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
   const shared = createApiResponseCacheStore(c.env);
   const { value, cacheHit } = await cachedJson<CiaReadResult>(
-    'cia:network:v5',
+    'cia:network:v6',
     API_CACHE_TTL_MS,
     async () => {
       const store = createCiaSnapshotStore(c.env);
@@ -335,6 +336,7 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
       const progressCounters = progress
         ? await store.syncRunCountersFromSnapshots(progress.id)
         : null;
+      const backgroundCron = await readCiaTickerState(c.env);
       const refreshActive = Boolean(progress && progress.status === 'running');
       // During refresh, show the target report date (yesterday IST) from the
       // in-progress run — not the older fullest completed run still backing most rows.
@@ -381,6 +383,7 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
                 stationsProcessing: progressCounters?.processingCount ?? 0,
               }
             : null,
+          backgroundCron,
           totals,
           stations: snaps.map((s) => ({
             stationCode: s.stationCode,

@@ -2,6 +2,7 @@
 import {
   ALLOWED_STATIONS,
   CIA_CHUNK_PENDING_MARKER,
+  CIA_MAX_IN_FLIGHT,
   CIA_PROCESSING_MARKER,
   CIA_PROCESSING_STALE_MS,
   CIA_RETRY_PENDING_MARKER,
@@ -13,6 +14,7 @@ import { createStationDataProvider } from '../providers/factory';
 import { ensureValidAmazonSession } from '../session/ensureSession';
 import { loadWorkforceRosterMap } from './workforceRoster';
 import { getCiaAnalysisWindow, mergeCiaStationPayloads, reconcileCashInAssociate, splitYmdRange } from './cashInAssociate';
+import { readCiaTickerState, writeCiaTickerState } from './ciaTickerState';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -245,9 +247,20 @@ function hasUnfinishedStationWork(stations: string[], byCode: SnapshotByCode): b
     if (!snap) return true;
     if (isRetryPendingSnapshot(snap.status, snap.error)) return true;
     if (isChunkPendingSnapshot(snap.status, snap.error)) return true;
-    if (isProcessingSnapshot(snap.status, snap.error) && !isStaleFetchedAt(snap.fetchedAt)) return true;
+    // Stale processing is still unfinished — reclaim it, do not finalize the run.
+    if (isProcessingSnapshot(snap.status, snap.error)) return true;
     return false;
   });
+}
+
+function freshProcessingCount(byCode: SnapshotByCode): number {
+  let count = 0;
+  for (const snap of byCode.values()) {
+    if (isProcessingSnapshot(snap.status, snap.error) && !isStaleFetchedAt(snap.fetchedAt)) {
+      count += 1;
+    }
+  }
+  return count;
 }
 /**
  * Return the next station for Ops Pulse BFF (no Amazon fetch).
@@ -266,6 +279,7 @@ export async function peekNextCiaStation(
   }
 
   const stations = stationList();
+  await store.reclaimStaleProcessingClaims(run.id);
   const snapshots = await store.listStationSnapshots(run.id);
   const byCode = new Map(snapshots.map((s) => [s.stationCode, s]));
   const nextStation = pickNextStationForBff(stations, byCode);
@@ -279,6 +293,9 @@ export async function peekNextCiaStation(
   }
 
   if (options?.claim) {
+    if (freshProcessingCount(byCode) >= CIA_MAX_IN_FLIGHT) {
+      return { run, stationCode: null, done: false };
+    }
     const claimed = await store.tryClaimStation({
       runId: run.id,
       stationCode: nextStation,
@@ -355,6 +372,7 @@ export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<
   }
 
   const stations = stationList();
+  await store.reclaimStaleProcessingClaims(run.id);
   const snapshots = await store.listStationSnapshots(run.id);
   const byCode = new Map(snapshots.map((s) => [s.stationCode, s]));
   const nextStation = pickNextStationForCron(stations, byCode);
@@ -365,6 +383,10 @@ export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<
       await finalizeFromSnapshots(env, run.id, stations.length);
     }
     return { run: await store.getRun(run.id), processedStation: null, done: !unfinished };
+  }
+
+  if (freshProcessingCount(byCode) >= CIA_MAX_IN_FLIGHT) {
+    return { run, processedStation: null, done: false };
   }
 
   const accountKey = portalAccountKeyForStation(nextStation);
@@ -543,19 +565,15 @@ export async function startCiaSnapshotRun(
   const forceNew = Boolean(options?.forceNew);
   const existing = await store.getActiveRunningRun();
   if (existing) {
-    if (existing.asOfDate === window.asOfDate) {
+    const sameDay = existing.asOfDate === window.asOfDate;
+    if (sameDay && !forceNew) {
       const counters = await store.syncRunCountersFromSnapshots(existing.id);
       const total = stationList().length;
       const complete = counters.finishedCount >= total && counters.inFlightCount === 0;
       if (complete) {
         await finalizeFromSnapshots(env, existing.id, total);
-        if (!forceNew) {
-          return { run: (await store.getRun(existing.id)) ?? existing, resumed: true };
-        }
-      } else {
-        // Never discard a same-day in-progress run (e.g. 37 ok, 1 in flight).
-        return { run: (await store.getRun(existing.id)) ?? existing, resumed: true };
       }
+      return { run: (await store.getRun(existing.id)) ?? existing, resumed: true };
     }
     const counters = await store.syncRunCountersFromSnapshots(existing.id);
     await store.finalizeRun({
@@ -746,20 +764,56 @@ export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
 
 /** Ticker: one full station via Ops Pulse (same as Update numbers), else one 7-day chunk. */
 export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
-  const viaPulse = await continueViaOpsPulse(env);
-  if (viaPulse.handled && (viaPulse.processedStation || viaPulse.done)) {
-    const run = viaPulse.run ?? (await createCiaSnapshotStore(env).getActiveRunningRun());
+  const store = createCiaSnapshotStore(env);
+  const active = await store.getActiveRunningRun();
+  if (!active) {
+    await writeCiaTickerState(env, { outcome: 'idle', lastRunId: null, lastStationCode: null, done: true });
+    return { run: null, processedStation: null, done: true };
+  }
+
+  const reclaimed = await store.reclaimStaleProcessingClaims(active.id);
+  const counters = await store.syncRunCountersFromSnapshots(active.id);
+  if (counters.processingCount >= CIA_MAX_IN_FLIGHT) {
+    const reason = `Waiting for in-flight station${reclaimed ? ` (reclaimed ${reclaimed} stale)` : ''}`;
+    console.log(`CIA ticker skip run ${active.id}: ${counters.processingCount} station(s) in flight`);
+    await writeCiaTickerState(env, {
+      outcome: 'skipped',
+      lastRunId: active.id,
+      lastStationCode: null,
+      skipReason: reason,
+      done: false,
+    });
+    return { run: active, processedStation: null, done: false };
+  }
+
+  const viaPulse = await continueViaOpsPulse(env, active.id);
+  if (viaPulse.handled) {
+    const run = viaPulse.run ?? (await store.getRun(active.id)) ?? active;
     if (viaPulse.processedStation) {
       console.log(`CIA tick via Ops Pulse station=${viaPulse.processedStation} done=${viaPulse.done}`);
     }
+    await writeCiaTickerState(env, {
+      outcome: viaPulse.processedStation ? 'processed' : viaPulse.done ? 'idle' : 'skipped',
+      lastRunId: run?.id ?? active.id,
+      lastStationCode: viaPulse.processedStation,
+      skipReason: viaPulse.processedStation ? null : 'Ops Pulse continue returned no station',
+      done: viaPulse.done,
+    });
     return { run, processedStation: viaPulse.processedStation, done: viaPulse.done };
   }
-  const tick = await processCiaSnapshotTick(env);
+  const tick = await processCiaSnapshotTick(env, active.id);
   if (tick.processedStation) {
     console.log(`CIA tick station=${tick.processedStation} done=${tick.done}`);
   } else if (tick.run?.status === 'running' && !tick.done) {
     console.warn(`CIA ticker idle for run ${tick.run.id}`);
   }
+  await writeCiaTickerState(env, {
+    outcome: tick.processedStation ? 'processed' : tick.done ? 'idle' : 'skipped',
+    lastRunId: tick.run?.id ?? active.id,
+    lastStationCode: tick.processedStation,
+    skipReason: tick.processedStation ? null : 'Worker chunk tick returned no station',
+    done: tick.done,
+  });
   return tick;
 }
 
