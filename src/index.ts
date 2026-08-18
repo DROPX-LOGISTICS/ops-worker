@@ -24,6 +24,7 @@ import {
   ciaRefreshHandler,
   ciaNextStationHandler,
   ciaContinueHandler,
+  ciaFrontendLeaseHandler,
   ciaReleaseClaimHandler,
   ciaTouchClaimHandler,
 } from './routes/cashInAssociate';
@@ -86,6 +87,7 @@ app.get('/api/admin/executive/cash-in-associate', ciaStationHandler);
 app.post('/api/admin/executive/cash-in-associate/refresh', ciaRefreshHandler);
 app.get('/api/admin/internal/cia-snapshot/next-station', ciaNextStationHandler);
 app.post('/api/admin/internal/cia-snapshot/next-station', ciaNextStationHandler);
+app.post('/api/admin/internal/cia-snapshot/frontend-lease', ciaFrontendLeaseHandler);
 app.post('/api/admin/internal/cia-snapshot/release-claim', ciaReleaseClaimHandler);
 app.post('/api/admin/internal/cia-snapshot/touch-claim', ciaTouchClaimHandler);
 app.post('/api/admin/internal/cia-snapshot/continue', ciaContinueHandler);

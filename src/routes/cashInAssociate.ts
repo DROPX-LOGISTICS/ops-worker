@@ -27,7 +27,7 @@ import {
   startCiaSnapshotRun,
   touchCiaStationClaim,
 } from '../services/ciaSnapshotRunner';
-import { readCiaTickerState } from '../services/ciaTickerState';
+import { readCiaTickerState, touchCiaFrontendLease } from '../services/ciaTickerState';
 
 /**
  * An empty table and an absent table both surface as `null` from the store, so
@@ -721,6 +721,28 @@ export async function ciaTouchClaimHandler(c: Context<{ Bindings: Env }>) {
     touched: result.touched,
     stationCode,
     run: result.run,
+  });
+}
+
+/**
+ * POST /api/admin/internal/cia-snapshot/frontend-lease
+ * Heartbeat from the frontend while it is actively advancing a network run.
+ * Cron uses this short lease to back off until the browser goes idle/closed.
+ */
+export async function ciaFrontendLeaseHandler(c: Context<{ Bindings: Env }>) {
+  let runId: string | undefined;
+  try {
+    const body = (await c.req.json()) as { runId?: string };
+    if (body?.runId?.trim()) runId = body.runId.trim();
+  } catch {
+    /* empty */
+  }
+
+  const lease = await touchCiaFrontendLease(c.env, runId);
+  return c.json({
+    status: 'ok',
+    runId: lease.runId,
+    touchedAt: lease.touchedAt,
   });
 }
 

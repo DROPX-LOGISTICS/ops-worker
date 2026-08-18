@@ -14,7 +14,12 @@ import { createStationDataProvider } from '../providers/factory';
 import { ensureValidAmazonSession } from '../session/ensureSession';
 import { loadWorkforceRosterMap } from './workforceRoster';
 import { getCiaAnalysisWindow, mergeCiaStationPayloads, reconcileCashInAssociate, splitYmdRange } from './cashInAssociate';
-import { readCiaTickerState, writeCiaTickerState } from './ciaTickerState';
+import {
+  isCiaFrontendLeaseActive,
+  readCiaFrontendLease,
+  readCiaTickerState,
+  writeCiaTickerState,
+} from './ciaTickerState';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -306,6 +311,22 @@ export async function peekNextCiaStation(
     if (!claimed) {
       return { run, stationCode: null, done: false };
     }
+    // Guard against TOCTOU: two BFF calls both read count=0 and both claim.
+    // Re-read after claiming; if another caller already owns a station, release ours.
+    const freshSnaps = await store.listStationSnapshots(run.id);
+    const freshByCode = new Map(freshSnaps.map((s) => [s.stationCode, s]));
+    if (freshProcessingCount(freshByCode) > CIA_MAX_IN_FLIGHT) {
+      await store.upsertStationSnapshot({
+        runId: run.id,
+        stationCode: nextStation,
+        accountKey: portalAccountKeyForStation(nextStation),
+        status: 'error',
+        error: CIA_RETRY_PENDING_MARKER,
+        summary: emptyPayload(run.windowFrom, run.windowTo).summary,
+        payload: emptyPayload(run.windowFrom, run.windowTo),
+      });
+      return { run, stationCode: null, done: false };
+    }
   }
 
   return { run, stationCode: nextStation, done: false };
@@ -398,6 +419,22 @@ export async function processCiaSnapshotTick(env: Env, runId?: string): Promise<
     windowTo: run.windowTo,
   });
   if (!claimed) {
+    return { run, processedStation: null, done: false };
+  }
+
+  // TOCTOU guard: release our claim if the BFF already owns another station.
+  const freshSnaps = await store.listStationSnapshots(run.id);
+  const freshByCode = new Map(freshSnaps.map((s) => [s.stationCode, s]));
+  if (freshProcessingCount(freshByCode) > CIA_MAX_IN_FLIGHT) {
+    await store.upsertStationSnapshot({
+      runId: run.id,
+      stationCode: nextStation,
+      accountKey,
+      status: 'error',
+      error: CIA_RETRY_PENDING_MARKER,
+      summary: emptyPayload(run.windowFrom, run.windowTo).summary,
+      payload: emptyPayload(run.windowFrom, run.windowTo),
+    });
     return { run, processedStation: null, done: false };
   }
 
@@ -762,13 +799,30 @@ export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
   }
 }
 
-/** Ticker: one full station via Ops Pulse (same as Update numbers), else one 7-day chunk. */
+/**
+ * Ticker: one full station via Ops Pulse (same as Update numbers), else one
+ * 7-day chunk. If anything is already in flight (e.g. the frontend auto-loop)
+ * the ticker backs off — never run two stations in parallel because they
+ * share one Amazon portal session.
+ */
 export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
   const store = createCiaSnapshotStore(env);
   const active = await store.getActiveRunningRun();
   if (!active) {
     await writeCiaTickerState(env, { outcome: 'idle', lastRunId: null, lastStationCode: null, done: true });
     return { run: null, processedStation: null, done: true };
+  }
+
+  const frontendLease = await readCiaFrontendLease(env);
+  if (isCiaFrontendLeaseActive(frontendLease, { runId: active.id })) {
+    await writeCiaTickerState(env, {
+      outcome: 'skipped',
+      lastRunId: active.id,
+      lastStationCode: null,
+      skipReason: 'Frontend refresh is actively driving this run',
+      done: false,
+    });
+    return { run: active, processedStation: null, done: false };
   }
 
   const reclaimed = await store.reclaimStaleProcessingClaims(active.id);
@@ -786,21 +840,9 @@ export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
     return { run: active, processedStation: null, done: false };
   }
 
-  const viaPulse = await continueViaOpsPulse(env, active.id);
-  if (viaPulse.handled) {
-    const run = viaPulse.run ?? (await store.getRun(active.id)) ?? active;
-    if (viaPulse.processedStation) {
-      console.log(`CIA tick via Ops Pulse station=${viaPulse.processedStation} done=${viaPulse.done}`);
-    }
-    await writeCiaTickerState(env, {
-      outcome: viaPulse.processedStation ? 'processed' : viaPulse.done ? 'idle' : 'skipped',
-      lastRunId: run?.id ?? active.id,
-      lastStationCode: viaPulse.processedStation,
-      skipReason: viaPulse.processedStation ? null : 'Ops Pulse continue returned no station',
-      done: viaPulse.done,
-    });
-    return { run, processedStation: viaPulse.processedStation, done: viaPulse.done };
-  }
+  // Worker-side chunk tick only — never call continueViaOpsPulse from the
+  // cron because the frontend auto-loop already calls the same BFF continue
+  // endpoint, leading to two concurrent station fetches on one session.
   const tick = await processCiaSnapshotTick(env, active.id);
   if (tick.processedStation) {
     console.log(`CIA tick station=${tick.processedStation} done=${tick.done}`);
