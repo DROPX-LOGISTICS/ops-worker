@@ -448,7 +448,11 @@ export class CiaSnapshotStore {
     finishedCount: number;
     inFlightCount: number;
     retryQueuedCount: number;
+    /** PROCESSING + CHUNK_PENDING (UI progress). */
     processingCount: number;
+    /** PROCESSING only — another worker owns a live fetch. */
+    activeProcessingCount: number;
+    chunkPendingCount: number;
   }> {
     const snaps = await this.listStationSnapshots(runId);
     let stationsOk = 0;
@@ -456,10 +460,19 @@ export class CiaSnapshotStore {
     let inFlightCount = 0;
     let retryQueuedCount = 0;
     let processingCount = 0;
+    let activeProcessingCount = 0;
+    let chunkPendingCount = 0;
     for (const s of snaps) {
-      if (isProcessingSnapshot(s) || isChunkPendingSnapshot(s)) {
+      if (isProcessingSnapshot(s)) {
         inFlightCount += 1;
         processingCount += 1;
+        activeProcessingCount += 1;
+        continue;
+      }
+      if (isChunkPendingSnapshot(s)) {
+        inFlightCount += 1;
+        processingCount += 1;
+        chunkPendingCount += 1;
         continue;
       }
       if (isRetryPendingSnapshot(s)) {
@@ -486,6 +499,8 @@ export class CiaSnapshotStore {
       inFlightCount,
       retryQueuedCount,
       processingCount,
+      activeProcessingCount,
+      chunkPendingCount,
     };
   }
 

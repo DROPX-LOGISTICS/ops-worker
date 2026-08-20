@@ -777,22 +777,30 @@ export async function refreshCiaStation(
   return { runId: run.id, snapshotStatus: 'error', error: result.error };
 }
 
-/** Daily cron (06:00 IST): start/resume the run, then fetch one station via Ops Pulse BFF. */
+/** Daily cron (06:00 IST): start/resume the run, then advance one station. */
 export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
+  const store = createCiaSnapshotStore(env);
   const { run } = await startCiaSnapshotRun(env);
+  await store.reclaimStaleProcessingClaims(run.id);
+  const counters = await store.syncRunCountersFromSnapshots(run.id);
+  if (counters.activeProcessingCount >= CIA_MAX_IN_FLIGHT) {
+    console.log(`CIA daily run ${run.id} skipped: station already in flight`);
+    return (await store.getRun(run.id)) ?? run;
+  }
+
   const viaPulse = await continueViaOpsPulse(env, run.id);
-  if (viaPulse.handled) {
+  if (viaPulse.processedStation) {
     console.log(
-      `CIA daily run ${run.id} via Ops Pulse station=${viaPulse.processedStation ?? 'none'} done=${viaPulse.done}`,
+      `CIA daily run ${run.id} via Ops Pulse station=${viaPulse.processedStation} done=${viaPulse.done}`,
     );
-    return (await createCiaSnapshotStore(env).getRun(run.id)) ?? run;
+    return (await store.getRun(run.id)) ?? run;
   }
   try {
     const tick = await processCiaSnapshotTick(env, run.id);
     console.log(
       `CIA daily run ${run.id} station=${tick.processedStation ?? 'none'} done=${tick.done}`,
     );
-    return (await createCiaSnapshotStore(env).getRun(run.id)) ?? run;
+    return (await store.getRun(run.id)) ?? run;
   } catch (err) {
     console.error('CIA daily first-station kick failed', err);
     return run;
@@ -827,9 +835,10 @@ export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
 
   const reclaimed = await store.reclaimStaleProcessingClaims(active.id);
   const counters = await store.syncRunCountersFromSnapshots(active.id);
-  if (counters.processingCount >= CIA_MAX_IN_FLIGHT) {
+  // CHUNK_PENDING is cron's own partial progress — must not block the next tick.
+  if (counters.activeProcessingCount >= CIA_MAX_IN_FLIGHT) {
     const reason = `Waiting for in-flight station${reclaimed ? ` (reclaimed ${reclaimed} stale)` : ''}`;
-    console.log(`CIA ticker skip run ${active.id}: ${counters.processingCount} station(s) in flight`);
+    console.log(`CIA ticker skip run ${active.id}: ${counters.activeProcessingCount} station(s) in flight`);
     await writeCiaTickerState(env, {
       outcome: 'skipped',
       lastRunId: active.id,
@@ -840,9 +849,22 @@ export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
     return { run: active, processedStation: null, done: false };
   }
 
-  // Worker-side chunk tick only — never call continueViaOpsPulse from the
-  // cron because the frontend auto-loop already calls the same BFF continue
-  // endpoint, leading to two concurrent station fetches on one session.
+  // No browser tab driving: use the faster BFF full-station path overnight.
+  // When the frontend lease is active, only the open tab should call continue.
+  const viaPulse = await continueViaOpsPulse(env, active.id);
+  if (viaPulse.processedStation) {
+    const run = viaPulse.run ?? (await store.getRun(active.id)) ?? active;
+    console.log(`CIA tick via Ops Pulse station=${viaPulse.processedStation} done=${viaPulse.done}`);
+    await writeCiaTickerState(env, {
+      outcome: 'processed',
+      lastRunId: run?.id ?? active.id,
+      lastStationCode: viaPulse.processedStation,
+      skipReason: null,
+      done: viaPulse.done,
+    });
+    return { run, processedStation: viaPulse.processedStation, done: viaPulse.done };
+  }
+
   const tick = await processCiaSnapshotTick(env, active.id);
   if (tick.processedStation) {
     console.log(`CIA tick station=${tick.processedStation} done=${tick.done}`);
