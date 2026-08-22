@@ -1,5 +1,10 @@
 import type { Env, WorkforceAuthContext } from '../types';
-import { DEFAULT_PORTAL_ACCOUNT, workforceBaseUrl, workforceCompanyId } from '../config';
+import {
+  DEFAULT_PORTAL_ACCOUNT,
+  workforceBaseUrl,
+  workforceCompanyId,
+  workforceProviderId,
+} from '../config';
 import { createWorkforceSessionStore } from '../store/factory';
 import { WorkforceProvider } from '../providers/WorkforceProvider';
 import { ProviderError } from '../errors';
@@ -7,7 +12,11 @@ import { refreshWorkforceSession } from './refreshWorkforceSession';
 import { getWorkforcePortalCredentials } from './workforceCredentials';
 
 function createProvider(env: Env): WorkforceProvider {
-  return new WorkforceProvider(workforceBaseUrl(env), workforceCompanyId(env));
+  return new WorkforceProvider(
+    workforceBaseUrl(env),
+    workforceCompanyId(env),
+    workforceProviderId(env),
+  );
 }
 
 export type EnsureWorkforceSessionResult =

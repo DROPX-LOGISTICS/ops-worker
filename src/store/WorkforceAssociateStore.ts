@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { normalizeTransporterId } from '../config';
 import type { WorkforceAssociate } from '../types';
 
 interface AssociateRow {
@@ -18,7 +19,7 @@ interface AssociateRow {
 
 function toAssociate(row: AssociateRow): WorkforceAssociate {
   return {
-    transporterId: row.transporter_id,
+    transporterId: normalizeTransporterId(row.transporter_id),
     fullName: row.full_name,
     providerId: row.provider_id,
     roles: row.roles,
@@ -34,7 +35,7 @@ function toAssociate(row: AssociateRow): WorkforceAssociate {
 
 function toRow(a: WorkforceAssociate): Omit<AssociateRow, 'synced_at'> & { synced_at?: string } {
   return {
-    transporter_id: a.transporterId,
+    transporter_id: normalizeTransporterId(a.transporterId),
     full_name: a.fullName,
     provider_id: a.providerId,
     roles: a.roles,
@@ -56,21 +57,32 @@ export class WorkforceAssociateStore {
   }
 
   async listAll(): Promise<WorkforceAssociate[]> {
-    const { data, error } = await this.client
-      .from('workforce_associates')
-      .select('*')
-      .order('full_name', { ascending: true });
+    // PostgREST defaults to max 1000 rows — paginate so ACTIVE+INACTIVE+OFFBOARDED
+    // rosters (often 1000+) are not truncated (which left many drivers "Unmapped").
+    const pageSize = 1000;
+    const out: WorkforceAssociate[] = [];
+    for (let from = 0; ; from += pageSize) {
+      const to = from + pageSize - 1;
+      const { data, error } = await this.client
+        .from('workforce_associates')
+        .select('*')
+        .order('full_name', { ascending: true })
+        .range(from, to);
 
-    if (error) {
-      console.error('WorkforceAssociateStore.listAll failed', error);
-      return [];
+      if (error) {
+        console.error('WorkforceAssociateStore.listAll failed', error);
+        break;
+      }
+      const rows = (data as AssociateRow[] | null) ?? [];
+      for (const row of rows) out.push(toAssociate(row));
+      if (rows.length < pageSize) break;
     }
-    return (data as AssociateRow[] | null)?.map(toAssociate) ?? [];
+    return out;
   }
 
   async getByTransporterIds(ids: string[]): Promise<Map<string, WorkforceAssociate>> {
     const map = new Map<string, WorkforceAssociate>();
-    const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+    const unique = [...new Set(ids.map((id) => normalizeTransporterId(id)).filter(Boolean))];
     if (unique.length === 0) return map;
 
     // Chunk to keep URLs/query size reasonable.
@@ -87,7 +99,8 @@ export class WorkforceAssociateStore {
         continue;
       }
       for (const row of (data as AssociateRow[] | null) ?? []) {
-        map.set(row.transporter_id, toAssociate(row));
+        const a = toAssociate(row);
+        map.set(a.transporterId, a);
       }
     }
     return map;

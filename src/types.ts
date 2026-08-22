@@ -35,6 +35,8 @@ export interface Env {
    */
   WORKFORCE_BASE_URL?: string;
   WORKFORCE_COMPANY_ID?: string;
+  /** Company-level flex provider id for DA onboarding list. */
+  WORKFORCE_PROVIDER_ID?: string;
   /**
    * logistics.amazon.in Puppeteer login (email → Continue → password → Sign in).
    * Prefer these over one-off cookie uploads.

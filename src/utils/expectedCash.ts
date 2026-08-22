@@ -6,6 +6,7 @@ import type {
   AgeingPackageDetail,
   WorkforceAssociate,
 } from '../types';
+import { normalizeTransporterId } from '../config';
 import { round2 } from './number';
 
 function isCashMethod(method: string | null | undefined): boolean {
@@ -48,6 +49,15 @@ type Bucket = {
   shipments: ExpectedCashShipment[];
 };
 
+function lookupWorkforce(
+  map: Map<string, WorkforceAssociate> | undefined,
+  transporterId: string,
+): WorkforceAssociate | undefined {
+  if (!map) return undefined;
+  const key = normalizeTransporterId(transporterId);
+  return key ? map.get(key) : undefined;
+}
+
 /**
  * Ageing CASH packages → expectedCash for the frontend.
  * Filters on actualPaymentMethod === CASH.
@@ -62,13 +72,14 @@ export function buildExpectedCashFromAgeing(
   const cashPackages = packages.filter((p) => isCashMethod(p.actualPaymentMethod));
   const byTasId = new Map<string, Driver>();
   for (const d of drivers) {
-    if (d.tasId) byTasId.set(d.tasId, d);
+    const tas = normalizeTransporterId(d.tasId);
+    if (tas) byTasId.set(tas, d);
   }
 
   const buckets = new Map<string, Bucket>();
 
   for (const pkg of cashPackages) {
-    const driverId = (pkg.driverId ?? '').trim();
+    const driverId = normalizeTransporterId(pkg.driverId);
     const bucketKey = driverId || '__unassigned__';
     let bucket = buckets.get(bucketKey);
     if (!bucket) {
@@ -83,7 +94,7 @@ export function buildExpectedCashFromAgeing(
           shipments: [],
         };
       } else if (driverId) {
-        const wf = workforceByTransporterId?.get(driverId);
+        const wf = lookupWorkforce(workforceByTransporterId, driverId);
         bucket = {
           employeeId: null,
           driverName: wf?.fullName ?? `Unmapped driver (${driverId})`,

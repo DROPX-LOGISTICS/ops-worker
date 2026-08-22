@@ -1,10 +1,19 @@
 import type { WorkforceAssociate, WorkforceAuthContext } from '../types';
-import { WORKFORCE_RESOURCES } from '../config';
+import { WORKFORCE_RESOURCES, normalizeTransporterId } from '../config';
 import { ProviderError } from '../errors';
 
 interface FetchAssociatesRaw {
   tableData?: {
     'dsp-associates-table-data'?: {
+      rows?: string[];
+    };
+  };
+}
+
+interface OnboardingRaw {
+  success?: boolean;
+  tableData?: {
+    onboardingTableData?: {
       rows?: string[];
     };
   };
@@ -24,10 +33,24 @@ interface AssociateJsonRow {
   operational_status?: string;
 }
 
+interface OnboardingJsonRow {
+  legalName?: string;
+  transporterId?: string;
+  providerId?: string;
+  roles?: string;
+  qualifications?: string;
+  phoneNumber?: string | null;
+  workPhoneNumber?: string;
+  emailAddress?: string;
+  operationalStatus?: string | null;
+  photoUrl?: string | null;
+  driverLicenseExpirationDate?: number | string | null;
+}
+
 function parseAssociateRow(raw: string): WorkforceAssociate | null {
   try {
     const row = JSON.parse(raw) as AssociateJsonRow;
-    const transporterId = (row.transporter_id ?? '').trim();
+    const transporterId = normalizeTransporterId(row.transporter_id);
     const fullName = (row.full_name ?? '').trim();
     if (!transporterId || !fullName) return null;
     return {
@@ -48,6 +71,41 @@ function parseAssociateRow(raw: string): WorkforceAssociate | null {
   }
 }
 
+function licenseDateFromOnboarding(value: number | string | null | undefined): string | null {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString().slice(0, 10);
+  }
+  const s = String(value).trim();
+  return s || null;
+}
+
+function parseOnboardingRow(raw: string): WorkforceAssociate | null {
+  try {
+    const row = JSON.parse(raw) as OnboardingJsonRow;
+    const transporterId = normalizeTransporterId(row.transporterId);
+    const fullName = (row.legalName ?? '').trim();
+    if (!transporterId || !fullName) return null;
+    return {
+      transporterId,
+      fullName,
+      providerId: row.providerId?.trim() || null,
+      roles: row.roles?.trim() || null,
+      qualifications: row.qualifications?.trim() || null,
+      operationalStatus: (row.operationalStatus ?? '').trim() || 'ONBOARDING',
+      personalPhoneNumber: row.phoneNumber?.trim() || null,
+      workPhoneNumber: row.workPhoneNumber?.trim() || null,
+      emailAddress: row.emailAddress?.trim() || null,
+      driverLicenseExpirationDate: licenseDateFromOnboarding(row.driverLicenseExpirationDate),
+      photoUrl: row.photoUrl?.trim() || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Client for logistics.amazon.in workforce APIs.
  * Auth is cookie-based (separate from amazonlogistics.eu station portal).
@@ -56,6 +114,7 @@ export class WorkforceProvider {
   constructor(
     private readonly baseUrl: string,
     private readonly companyId: string,
+    private readonly providerId: string,
   ) {}
 
   /**
@@ -146,15 +205,47 @@ export class WorkforceProvider {
     });
 
     const path = `${WORKFORCE_RESOURCES.fetchDSPAssociates}?${qs.toString()}`;
+    const tabId =
+      operationalStatuses === 'OFFBOARDED'
+        ? 'da-console-offboarded-tab'
+        : 'da-console-associates-tab';
+    const pageId =
+      operationalStatuses === 'OFFBOARDED' ? 'da_console_offboarded' : 'da_console_associates';
     const referer =
-      `/workforce?pageId=da_console_associates&station=${encodeURIComponent(station)}` +
-      `&companyId=${encodeURIComponent(companyId)}&tabId=da-console-associates-tab`;
+      `/workforce?pageId=${pageId}&station=${encodeURIComponent(station)}` +
+      `&companyId=${encodeURIComponent(companyId)}&tabId=${tabId}`;
 
     const raw = await this.getJson<FetchAssociatesRaw>(path, auth, referer);
     const rows = raw.tableData?.['dsp-associates-table-data']?.rows ?? [];
     const associates: WorkforceAssociate[] = [];
     for (const row of rows) {
       const parsed = parseAssociateRow(row);
+      if (parsed) associates.push(parsed);
+    }
+    return associates;
+  }
+
+  /**
+   * GET /dsp-account-management/data/get-da-onboarding-data
+   * Fallback name source when transporter id is not yet ACTIVE/INACTIVE/OFFBOARDED.
+   */
+  async fetchOnboardingAssociates(
+    auth: WorkforceAuthContext,
+    opts?: { providerId?: string; companyId?: string },
+  ): Promise<WorkforceAssociate[]> {
+    const providerId = opts?.providerId ?? this.providerId;
+    const companyId = opts?.companyId ?? this.companyId;
+    const qs = new URLSearchParams({ providerId });
+    const path = `${WORKFORCE_RESOURCES.getDaOnboardingData}?${qs.toString()}`;
+    const referer =
+      `/workforce?pageId=da_console_onboarding&station=ALL` +
+      `&companyId=${encodeURIComponent(companyId)}&tabId=da-console-onboarding-tab`;
+
+    const raw = await this.getJson<OnboardingRaw>(path, auth, referer);
+    const rows = raw.tableData?.onboardingTableData?.rows ?? [];
+    const associates: WorkforceAssociate[] = [];
+    for (const row of rows) {
+      const parsed = parseOnboardingRow(row);
       if (parsed) associates.push(parsed);
     }
     return associates;

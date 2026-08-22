@@ -155,7 +155,27 @@ export function workforceCompanyId(env: { WORKFORCE_COMPANY_ID?: string }): stri
   return (env.WORKFORCE_COMPANY_ID ?? DEFAULT_WORKFORCE_COMPANY_ID).trim();
 }
 
+/**
+ * DSP provider id for onboarding APIs (get-da-onboarding-data).
+ * Distinct from per-associate flex provider_id on fetchDSPAssociates rows.
+ */
+export const DEFAULT_WORKFORCE_PROVIDER_ID =
+  'amzn1.flex.provider.v1.25e07c6d-0b11-4e79-8b34-06f3c2127dde';
+
+export function workforceProviderId(env: { WORKFORCE_PROVIDER_ID?: string }): string {
+  return (env.WORKFORCE_PROVIDER_ID ?? DEFAULT_WORKFORCE_PROVIDER_ID).trim();
+}
+
+/** Re-fetch Amazon roster when Supabase cache is older than this. */
+export const WORKFORCE_ROSTER_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
 /** Workforce API paths (extend as more endpoints are wired). */
 export const WORKFORCE_RESOURCES = {
   fetchDSPAssociates: '/workforce/api/v1/fetchDSPAssociates',
+  getDaOnboardingData: '/dsp-account-management/data/get-da-onboarding-data',
 } as const;
+
+/** Normalize transporter / tas ids for map keys (Amazon IDs are case-sensitive in theory, stable uppercase in practice). */
+export function normalizeTransporterId(id: string | null | undefined): string {
+  return (id ?? '').trim().toUpperCase();
+}

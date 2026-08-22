@@ -208,8 +208,8 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
         }
 
         const provider = createStationDataProvider(c.env);
-        // Roster from Supabase cache only — do not block live range on workforce refresh.
-        const workforce = await loadWorkforceRosterMap(c.env, { accountKey: ensured.accountKey });
+        // Roster uses logistics.amazon.in session (cached separately from station portal).
+        const workforce = await loadWorkforceRosterMap(c.env);
         const payload = await reconcileCashInAssociate({
           stationCode,
           fromDate: fromDateQuery,

@@ -18,6 +18,7 @@ import {
   CIA_REMITTANCE_DETAILS_CONCURRENCY,
   CIA_REMITTANCE_DETAILS_MAX,
   CIA_REMITTANCE_FETCH_COUNT,
+  normalizeTransporterId,
 } from '../config';
 import {
   addDaysYmd,
@@ -401,13 +402,15 @@ function buildPendingDrivers(
       const key = d.tasId ?? d.driverName;
       let acc = byKey.get(key);
       if (!acc) {
-        const wf = d.tasId ? workforceByTransporterId?.get(d.tasId) : undefined;
+        const wf = d.tasId
+          ? workforceByTransporterId?.get(normalizeTransporterId(d.tasId))
+          : undefined;
         acc = {
-          driverName: d.driverName,
+          driverName: wf?.fullName ?? d.driverName,
           tasId: d.tasId,
           employeeId: d.employeeId,
           operationalStatus: wf?.operationalStatus ?? null,
-          mappedFromWorkforce: d.mappedFromWorkforce,
+          mappedFromWorkforce: Boolean(wf) || d.mappedFromWorkforce,
           amount: 0,
           shipmentCount: 0,
           dateSet: new Set(),

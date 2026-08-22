@@ -1,12 +1,23 @@
 import type { Env, WorkforceAssociate, WorkforceAuthContext } from '../types';
-import { workforceBaseUrl, workforceCompanyId, DEFAULT_PORTAL_ACCOUNT } from '../config';
+import {
+  workforceBaseUrl,
+  workforceCompanyId,
+  workforceProviderId,
+  DEFAULT_PORTAL_ACCOUNT,
+  WORKFORCE_ROSTER_MAX_AGE_MS,
+  normalizeTransporterId,
+} from '../config';
 import { WorkforceProvider } from '../providers/WorkforceProvider';
 import { createWorkforceSessionStore, createWorkforceAssociateStore } from '../store/factory';
 import { ProviderError } from '../errors';
 import { ensureValidWorkforceSession } from '../session/ensureWorkforceSession';
 
 export function createWorkforceProvider(env: Env): WorkforceProvider {
-  return new WorkforceProvider(workforceBaseUrl(env), workforceCompanyId(env));
+  return new WorkforceProvider(
+    workforceBaseUrl(env),
+    workforceCompanyId(env),
+    workforceProviderId(env),
+  );
 }
 
 /**
@@ -85,9 +96,50 @@ export async function ensureWorkforceSession(
   };
 }
 
+function rosterMapFromList(associates: WorkforceAssociate[]): Map<string, WorkforceAssociate> {
+  const byTransporterId = new Map<string, WorkforceAssociate>();
+  for (const a of associates) {
+    const id = normalizeTransporterId(a.transporterId);
+    if (!id) continue;
+    byTransporterId.set(id, { ...a, transporterId: id });
+  }
+  return byTransporterId;
+}
+
+/**
+ * Merge roster sources. Prefer ACTIVE/INACTIVE, then OFFBOARDED, then ONBOARDING
+ * so a live associate name is never overwritten by an onboarding stub.
+ */
+function mergeRosterLayers(
+  ...layers: WorkforceAssociate[][]
+): Map<string, WorkforceAssociate> {
+  const byId = new Map<string, WorkforceAssociate>();
+  // Insert lowest-priority first so higher-priority layers overwrite.
+  for (let i = layers.length - 1; i >= 0; i--) {
+    for (const a of layers[i] ?? []) {
+      const id = normalizeTransporterId(a.transporterId);
+      if (!id) continue;
+      byId.set(id, { ...a, transporterId: id });
+    }
+  }
+  return byId;
+}
+
+function isRosterFresh(syncedAt: string | null): boolean {
+  if (!syncedAt) return false;
+  const t = Date.parse(syncedAt);
+  if (!Number.isFinite(t)) return false;
+  return Date.now() - t < WORKFORCE_ROSTER_MAX_AGE_MS;
+}
+
 /**
  * Load transporter_id → associate map for enrichment.
- * Prefer Supabase cache; live-refresh via ensure when forceRefresh or cache empty.
+ * Prefer Supabase cache when fresh; live-refresh via ensure when forceRefresh,
+ * cache empty, or cache older than WORKFORCE_ROSTER_MAX_AGE_MS.
+ *
+ * Live sync pulls ACTIVE+INACTIVE, OFFBOARDED, and onboarding lists.
+ * Workforce portal session (logistics.amazon.in) is reused from Supabase until
+ * probe fails, then auto-login — same pattern as station portal sessions.
  */
 export async function loadWorkforceRosterMap(
   env: Env,
@@ -99,17 +151,21 @@ export async function loadWorkforceRosterMap(
   count: number;
 }> {
   const associateStore = createWorkforceAssociateStore(env);
-  const accountKey = opts?.accountKey ?? DEFAULT_PORTAL_ACCOUNT;
+  // Workforce portal uses its own credential/session row — never the station portal account key.
+  const accountKey = DEFAULT_PORTAL_ACCOUNT;
+  void opts?.accountKey;
 
   const cachedCount = await associateStore.count();
-  if (!opts?.forceRefresh && cachedCount > 0) {
+  const syncedAtCached = cachedCount > 0 ? await associateStore.latestSyncedAt() : null;
+
+  if (!opts?.forceRefresh && cachedCount > 0 && isRosterFresh(syncedAtCached)) {
     const all = await associateStore.listAll();
-    const byTransporterId = new Map(all.map((a) => [a.transporterId, a]));
+    const byTransporterId = rosterMapFromList(all);
     return {
       byTransporterId,
       source: 'cache',
-      syncedAt: await associateStore.latestSyncedAt(),
-      count: all.length,
+      syncedAt: syncedAtCached,
+      count: byTransporterId.size,
     };
   }
 
@@ -123,7 +179,7 @@ export async function loadWorkforceRosterMap(
     if (cachedCount > 0) {
       const all = await associateStore.listAll();
       return {
-        byTransporterId: new Map(all.map((a) => [a.transporterId, a])),
+        byTransporterId: rosterMapFromList(all),
         source: 'cache',
         syncedAt: await associateStore.latestSyncedAt(),
         count: all.length,
@@ -135,20 +191,21 @@ export async function loadWorkforceRosterMap(
   const provider = createWorkforceProvider(env);
   const sessionStore = createWorkforceSessionStore(env);
   try {
-    // ACTIVE+INACTIVE and OFFBOARDED are separate portal tabs / query params.
-    const [activeInactive, offboarded] = await Promise.all([
+    // Associates / offboarded / onboarding are separate portal tabs.
+    const [activeInactive, offboarded, onboarding] = await Promise.all([
       provider.fetchDSPAssociates(ensured.auth, {
         operationalStatuses: 'ACTIVE,INACTIVE',
       }),
       provider.fetchDSPAssociates(ensured.auth, {
         operationalStatuses: 'OFFBOARDED',
       }),
+      provider.fetchOnboardingAssociates(ensured.auth).catch((err) => {
+        console.warn('workforce onboarding fetch failed (continuing)', err);
+        return [] as WorkforceAssociate[];
+      }),
     ]);
 
-    const byId = new Map<string, WorkforceAssociate>();
-    for (const a of [...activeInactive, ...offboarded]) {
-      byId.set(a.transporterId, a);
-    }
+    const byId = mergeRosterLayers(activeInactive, offboarded, onboarding);
     const associates = [...byId.values()];
 
     await associateStore.upsertMany(associates);
@@ -165,7 +222,7 @@ export async function loadWorkforceRosterMap(
     if (cachedCount > 0) {
       const all = await associateStore.listAll();
       return {
-        byTransporterId: new Map(all.map((a) => [a.transporterId, a])),
+        byTransporterId: rosterMapFromList(all),
         source: 'cache',
         syncedAt: await associateStore.latestSyncedAt(),
         count: all.length,
