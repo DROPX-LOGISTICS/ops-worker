@@ -103,6 +103,7 @@ interface RawAgeingPackage {
   orderingOrderId?: string | null;
   stationCode?: string | null;
   dspName?: string | null;
+  accessPointId?: string | null;
 }
 
 interface AgeingDrillDownResponse {
@@ -137,6 +138,7 @@ function normaliseAgeingPackage(row: RawAgeingPackage): AgeingPackageDetail {
     orderingOrderId: row.orderingOrderId ?? null,
     stationCode: row.stationCode ? String(row.stationCode).trim().toUpperCase() : null,
     dspName: row.dspName ?? null,
+    accessPointId: row.accessPointId ? String(row.accessPointId).trim() : null,
   };
 }
 

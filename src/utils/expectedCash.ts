@@ -26,6 +26,19 @@ function dateOnly(lastUpdatedTime: string | null): string | null {
   return part || null;
 }
 
+/**
+ * Amazon access point IDs look like "Store_Reliance Pets_SO" — strip the leading
+ * "Store_" marker and the trailing "_XX" short code to get a clean, matchable name.
+ * Falls back to the raw id (trimmed) if it doesn't follow that pattern.
+ */
+function parseAccessPointStoreName(accessPointId: string): string {
+  const trimmed = accessPointId.trim();
+  if (!trimmed) return '';
+  const withoutPrefix = trimmed.replace(/^Store[_\s]+/i, '');
+  const withoutSuffix = withoutPrefix.replace(/[_\s]+[A-Za-z]{1,4}$/, '');
+  return (withoutSuffix.trim() || withoutPrefix.trim() || trimmed).trim();
+}
+
 function toShipment(pkg: AgeingPackageDetail, employeeId: number | null): ExpectedCashShipment {
   return {
     barcode: pkg.trackingId,
@@ -46,6 +59,7 @@ type Bucket = {
   tasId: string | null;
   mappedToActiveDriver: boolean;
   mappedFromWorkforce: boolean;
+  isAccessPoint: boolean;
   shipments: ExpectedCashShipment[];
 };
 
@@ -79,18 +93,35 @@ export function buildExpectedCashFromAgeing(
   const buckets = new Map<string, Bucket>();
 
   for (const pkg of cashPackages) {
+    // Access-point / locker deliveries carry a useless-or-empty driverId — Amazon tags
+    // them with accessPointId instead, so that has to take priority as the identity.
+    const accessPointId = normalizeTransporterId(pkg.accessPointId);
+    const storeName = accessPointId ? parseAccessPointStoreName(pkg.accessPointId ?? '') : '';
     const driverId = normalizeTransporterId(pkg.driverId);
-    const bucketKey = driverId || '__unassigned__';
+    const bucketKey = accessPointId ? `ap:${accessPointId}` : driverId || '__unassigned__';
     let bucket = buckets.get(bucketKey);
     if (!bucket) {
-      const driver = driverId ? byTasId.get(driverId) : undefined;
-      if (driver) {
+      const driver = !accessPointId && driverId ? byTasId.get(driverId) : undefined;
+      if (accessPointId) {
+        bucket = {
+          employeeId: null,
+          driverName: storeName || `Access point (${accessPointId})`,
+          // Raw accessPointId as tasId — a stable, unique identity per store so it never
+          // collapses into the shared "unassigned" bucket with other stores/drivers.
+          tasId: pkg.accessPointId ? pkg.accessPointId.trim() : accessPointId,
+          mappedToActiveDriver: false,
+          mappedFromWorkforce: false,
+          isAccessPoint: true,
+          shipments: [],
+        };
+      } else if (driver) {
         bucket = {
           employeeId: driver.employeeId,
           driverName: driver.driverName,
           tasId: driver.tasId,
           mappedToActiveDriver: true,
           mappedFromWorkforce: false,
+          isAccessPoint: false,
           shipments: [],
         };
       } else if (driverId) {
@@ -101,6 +132,7 @@ export function buildExpectedCashFromAgeing(
           tasId: driverId,
           mappedToActiveDriver: false,
           mappedFromWorkforce: Boolean(wf),
+          isAccessPoint: false,
           shipments: [],
         };
       } else {
@@ -110,6 +142,7 @@ export function buildExpectedCashFromAgeing(
           tasId: null,
           mappedToActiveDriver: false,
           mappedFromWorkforce: false,
+          isAccessPoint: false,
           shipments: [],
         };
       }
@@ -134,6 +167,7 @@ export function buildExpectedCashFromAgeing(
       tasId: bucket.tasId,
       mappedToActiveDriver: bucket.mappedToActiveDriver,
       mappedFromWorkforce: bucket.mappedFromWorkforce || undefined,
+      isAccessPoint: bucket.isAccessPoint || undefined,
       totalReceived: driverTotal,
       shipmentCount: bucket.shipments.length,
       shipments: bucket.shipments,

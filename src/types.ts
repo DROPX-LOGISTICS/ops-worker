@@ -171,6 +171,12 @@ export interface AgeingPackageDetail {
   /** Station head / node Amazon tagged this ageing row with. */
   stationCode: string | null;
   dspName: string | null;
+  /**
+   * Amazon access point / store identifier (e.g. "Store_Reliance Pets_SO") for packages
+   * delivered through a locker/store rather than a driver. driverId is empty or
+   * meaningless on these rows, so expected cash must be attributed by this field instead.
+   */
+  accessPointId: string | null;
 }
 
 /** Frontend shipment row inside expectedCash (legacy shape). */
@@ -204,6 +210,11 @@ export interface ExpectedCashByDriver {
    * (logistics.amazon.in transporter_id) rather than station getDrivers.
    */
   mappedFromWorkforce?: boolean;
+  /**
+   * True when this bucket is a store / access point (locker pickup), not a driver —
+   * tasId holds the raw accessPointId and driverName holds the cleaned store name.
+   */
+  isAccessPoint?: boolean;
   totalReceived: number;
   shipmentCount: number;
   shipments: ExpectedCashShipment[];
