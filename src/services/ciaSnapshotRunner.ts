@@ -2,6 +2,8 @@
 import {
   ALLOWED_STATIONS,
   CIA_CHUNK_PENDING_MARKER,
+  CIA_HOURLY_MAX_STEPS,
+  CIA_HOURLY_WALL_MS,
   CIA_MAX_IN_FLIGHT,
   CIA_PROCESSING_MARKER,
   CIA_PROCESSING_STALE_MS,
@@ -782,34 +784,72 @@ export async function refreshCiaStation(
   return { runId: run.id, snapshotStatus: 'error', error: result.error };
 }
 
-/** Hourly cron (06:00–20:00 IST): start/resume the run, then advance one station. */
+/**
+ * Hourly cron (06:00–20:00 IST): start/resume today's run, then burst as many
+ * stations/chunks as fit the wall-time budget. Prefer Ops Pulse full-station
+ * continues; fall back to in-worker 7-day chunks. No every-minute ticker.
+ */
 export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
   const store = createCiaSnapshotStore(env);
-  const { run } = await startCiaSnapshotRun(env);
-  await store.reclaimStaleProcessingClaims(run.id);
-  const counters = await store.syncRunCountersFromSnapshots(run.id);
-  if (counters.activeProcessingCount >= CIA_MAX_IN_FLIGHT) {
-    console.log(`CIA hourly run ${run.id} skipped: station already in flight`);
-    return (await store.getRun(run.id)) ?? run;
+  const { run: started } = await startCiaSnapshotRun(env);
+  let run = started;
+  const burstStartedAt = Date.now();
+  let steps = 0;
+  let lastStation: string | null = null;
+  const total = stationList().length;
+
+  while (
+    steps < CIA_HOURLY_MAX_STEPS
+    && Date.now() - burstStartedAt < CIA_HOURLY_WALL_MS
+  ) {
+    await store.reclaimStaleProcessingClaims(run.id);
+    const counters = await store.syncRunCountersFromSnapshots(run.id);
+
+    if (counters.finishedCount >= total && counters.inFlightCount === 0) {
+      await finalizeFromSnapshots(env, run.id, total);
+      break;
+    }
+
+    // Another caller (open tab / overlapping continue) owns the portal session.
+    // Stop the burst instead of spinning — next hour resumes.
+    if (counters.activeProcessingCount >= CIA_MAX_IN_FLIGHT) {
+      console.log(`CIA hourly burst ${run.id} pause: station already in flight`);
+      break;
+    }
+
+    const frontendLease = await readCiaFrontendLease(env);
+    if (isCiaFrontendLeaseActive(frontendLease, { runId: run.id })) {
+      console.log(`CIA hourly burst ${run.id} pause: frontend lease active`);
+      break;
+    }
+
+    const viaPulse = await continueViaOpsPulse(env, run.id);
+    if (viaPulse.processedStation) {
+      steps += 1;
+      lastStation = viaPulse.processedStation;
+      run = viaPulse.run ?? (await store.getRun(run.id)) ?? run;
+      if (viaPulse.done) break;
+      continue;
+    }
+
+    try {
+      const tick = await processCiaSnapshotTick(env, run.id);
+      run = tick.run ?? (await store.getRun(run.id)) ?? run;
+      if (!tick.processedStation) break;
+      steps += 1;
+      lastStation = tick.processedStation;
+      if (tick.done) break;
+    } catch (err) {
+      console.error('CIA hourly burst step failed', err);
+      break;
+    }
   }
 
-  const viaPulse = await continueViaOpsPulse(env, run.id);
-  if (viaPulse.processedStation) {
-    console.log(
-      `CIA hourly run ${run.id} via Ops Pulse station=${viaPulse.processedStation} done=${viaPulse.done}`,
-    );
-    return (await store.getRun(run.id)) ?? run;
-  }
-  try {
-    const tick = await processCiaSnapshotTick(env, run.id);
-    console.log(
-      `CIA hourly run ${run.id} station=${tick.processedStation ?? 'none'} done=${tick.done}`,
-    );
-    return (await store.getRun(run.id)) ?? run;
-  } catch (err) {
-    console.error('CIA hourly first-station kick failed', err);
-    return run;
-  }
+  console.log(
+    `CIA hourly burst run=${run.id} steps=${steps} last=${lastStation ?? 'none'} `
+      + `elapsedMs=${Date.now() - burstStartedAt}`,
+  );
+  return (await store.getRun(run.id)) ?? run;
 }
 
 /**

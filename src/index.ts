@@ -28,7 +28,7 @@ import {
   ciaReleaseClaimHandler,
   ciaTouchClaimHandler,
 } from './routes/cashInAssociate';
-import { ciaDailyCron, ciaTickerCron } from './services/ciaSnapshotRunner';
+import { ciaDailyCron } from './services/ciaSnapshotRunner';
 import { dbDiagHandler } from './routes/dbDiag';
 import { listNotificationsHandler, acknowledgeNotificationHandler } from './routes/notifications';
 import {
@@ -122,39 +122,33 @@ app.get('/api/admin/workforce/associates/:transporterId', getWorkforceAssociateH
 app.notFound((c) => c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404));
 
 /**
- * Same-day CIA refresh kicks: 06:00–20:00 IST inclusive (= 00:30–14:30 UTC).
+ * Same-day CIA refresh: 06:00–20:00 IST inclusive (= 00:30–14:30 UTC).
  * Cloudflare reports the expression as configured in wrangler.toml.
  */
 const CIA_HOURLY_CRON = '30 0-14 * * *';
 
 /**
- * Cash In Associate snapshots (same calendar day):
- * - :30 past each hour 00–14 UTC (06:00–20:00 IST): start today's run at 06:00,
- *   then each later hour refreshes values (resume if still running, else new cycle).
- * - Every minute: advance one unfinished station/chunk (in-process; nested
- *   Worker HTTP hits Cloudflare 1042).
+ * Cash In Associate snapshots (cost-efficient):
+ * - One cron only, hourly 06:00–20:00 IST (no every-minute wakeups).
+ * - Each hour starts/resumes today's run and bursts stations within a wall budget.
  */
 async function scheduled(
   event: ScheduledEvent,
   env: Env,
   ctx: ExecutionContext,
 ): Promise<void> {
-  const job =
-    event.cron === CIA_HOURLY_CRON
-      ? ciaDailyCron(env).then((run) => {
-          console.log(`CIA hourly run ${run.id} status=${run.status}`);
-        })
-      : ciaTickerCron(env).then((tick) => {
-          if (tick.processedStation) {
-            console.log(
-              `CIA tick processed ${tick.processedStation} (done=${tick.done})`,
-            );
-          }
-        });
+  if (event.cron !== CIA_HOURLY_CRON) {
+    console.warn(`CIA scheduled ignored unexpected cron: ${event.cron}`);
+    return;
+  }
   ctx.waitUntil(
-    job.catch((err) => {
-      console.error('CIA scheduled job failed', err);
-    }),
+    ciaDailyCron(env)
+      .then((run) => {
+        console.log(`CIA hourly run ${run.id} status=${run.status}`);
+      })
+      .catch((err) => {
+        console.error('CIA scheduled job failed', err);
+      }),
   );
 }
 
