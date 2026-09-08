@@ -122,29 +122,30 @@ app.get('/api/admin/workforce/associates/:transporterId', getWorkforceAssociateH
 app.notFound((c) => c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404));
 
 /**
- * Same-day CIA refresh: 06:00–20:00 IST inclusive (= 00:30–14:30 UTC).
+ * Same-day CIA refresh: every 2 hours 06:00–20:00 IST (= 00:30–14:30 UTC).
  * Cloudflare reports the expression as configured in wrangler.toml.
  */
-const CIA_HOURLY_CRON = '30 0-14 * * *';
+const CIA_REFRESH_CRON = '30 0,2,4,6,8,10,12,14 * * *';
 
 /**
  * Cash In Associate snapshots (cost-efficient):
- * - One cron only, hourly 06:00–20:00 IST (no every-minute wakeups).
- * - Each hour starts/resumes today's run and bursts stations within a wall budget.
+ * - One cron only, every 2 hours 06:00–20:00 IST (no every-minute wakeups).
+ * - Each kick starts/resumes today's run and bursts stations within a wall budget.
+ * - Longer gap after a completed run so the UI is not stuck on "running".
  */
 async function scheduled(
   event: ScheduledEvent,
   env: Env,
   ctx: ExecutionContext,
 ): Promise<void> {
-  if (event.cron !== CIA_HOURLY_CRON) {
+  if (event.cron !== CIA_REFRESH_CRON) {
     console.warn(`CIA scheduled ignored unexpected cron: ${event.cron}`);
     return;
   }
   ctx.waitUntil(
     ciaDailyCron(env)
       .then((run) => {
-        console.log(`CIA hourly run ${run.id} status=${run.status}`);
+        console.log(`CIA refresh run ${run.id} status=${run.status}`);
       })
       .catch((err) => {
         console.error('CIA scheduled job failed', err);

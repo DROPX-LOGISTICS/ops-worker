@@ -124,13 +124,14 @@ export const CIA_PROCESSING_STALE_MS = 4 * 60 * 1000;
 export const CIA_MAX_IN_FLIGHT = 1;
 
 /**
- * Hourly CIA burst budget (wall clock). Network-bound Amazon/Ops Pulse work
- * dominates; keep under typical Worker scheduled limits and leave headroom.
+ * Hourly CIA burst budget (wall clock). Used by the every-2-hour cron kick.
+ * Network-bound Amazon/Ops Pulse work dominates; keep under typical Worker
+ * scheduled limits and leave headroom.
  */
 export const CIA_HOURLY_WALL_MS = 45_000;
 
 /**
- * Max station/chunk steps per hourly burst. Caps CPU if Ops Pulse is down and
+ * Max station/chunk steps per cron burst. Caps CPU if Ops Pulse is down and
  * we fall back to smaller in-worker chunks.
  */
 export const CIA_HOURLY_MAX_STEPS = 60;

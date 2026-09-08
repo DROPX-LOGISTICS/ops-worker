@@ -590,13 +590,13 @@ async function finalizeFromSnapshots(
 /**
  * Start a CIA snapshot run for today's window.
  *
- * Same-day behavior (hourly 06:00–20:00 IST kicks):
- * - Still running → resume (minute ticker keeps filling stations).
- * - Finished → finalize and start a fresh run so values refresh that hour.
+ * Same-day behavior (every 2 hours 06:00–20:00 IST):
+ * - Still running → resume (burst fills more stations).
+ * - Finished → finalize and start a fresh run on the next kick so values refresh.
  * - No active run → start a new run.
  *
  * Pass `forceNew: true` for manual "Refresh all" to supersede a stuck same-day run.
- * New runs force-sync the workforce roster once; stations advance on ticker ticks.
+ * New runs force-sync the workforce roster once; stations advance during the burst.
  */
 export async function startCiaSnapshotRun(
   env: Env,
@@ -615,7 +615,7 @@ export async function startCiaSnapshotRun(
       if (!complete) {
         return { run: (await store.getRun(existing.id)) ?? existing, resumed: true };
       }
-      // Today's cycle finished — close it and open the next hourly refresh.
+      // Today's cycle finished — close it and open the next 2-hour refresh cycle.
       await finalizeFromSnapshots(env, existing.id, total);
     } else {
       const counters = await store.syncRunCountersFromSnapshots(existing.id);
@@ -785,9 +785,9 @@ export async function refreshCiaStation(
 }
 
 /**
- * Hourly cron (06:00–20:00 IST): start/resume today's run, then burst as many
- * stations/chunks as fit the wall-time budget. Prefer Ops Pulse full-station
- * continues; fall back to in-worker 7-day chunks. No every-minute ticker.
+ * Every-2-hour cron (06:00–20:00 IST): start/resume today's run, then burst as
+ * many stations/chunks as fit the wall-time budget. Prefer Ops Pulse
+ * full-station continues; fall back to in-worker 7-day chunks.
  */
 export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
   const store = createCiaSnapshotStore(env);
@@ -813,13 +813,13 @@ export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
     // Another caller (open tab / overlapping continue) owns the portal session.
     // Stop the burst instead of spinning — next hour resumes.
     if (counters.activeProcessingCount >= CIA_MAX_IN_FLIGHT) {
-      console.log(`CIA hourly burst ${run.id} pause: station already in flight`);
+      console.log(`CIA refresh burst ${run.id} pause: station already in flight`);
       break;
     }
 
     const frontendLease = await readCiaFrontendLease(env);
     if (isCiaFrontendLeaseActive(frontendLease, { runId: run.id })) {
-      console.log(`CIA hourly burst ${run.id} pause: frontend lease active`);
+      console.log(`CIA refresh burst ${run.id} pause: frontend lease active`);
       break;
     }
 
@@ -840,13 +840,13 @@ export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
       lastStation = tick.processedStation;
       if (tick.done) break;
     } catch (err) {
-      console.error('CIA hourly burst step failed', err);
+      console.error('CIA refresh burst step failed', err);
       break;
     }
   }
 
   console.log(
-    `CIA hourly burst run=${run.id} steps=${steps} last=${lastStation ?? 'none'} `
+    `CIA refresh burst run=${run.id} steps=${steps} last=${lastStation ?? 'none'} `
       + `elapsedMs=${Date.now() - burstStartedAt}`,
   );
   return (await store.getRun(run.id)) ?? run;

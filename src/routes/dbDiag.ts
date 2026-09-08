@@ -168,7 +168,7 @@ export async function dbDiagHandler(c: Context<{ Bindings: Env }>) {
       tables,
       hint: schemaReady
         ? ciaRuns === 0
-          ? 'Schema is ready but no snapshot has run yet. POST /api/admin/executive/cash-in-associate/refresh or wait for the next hourly CIA cron (06:00–20:00 IST).'
+          ? 'Schema is ready but no snapshot has run yet. POST /api/admin/executive/cash-in-associate/refresh or wait for the next CIA cron (every 2 hours, 06:00–20:00 IST).'
           : 'Schema is ready.'
         : "Run sql/company-cutover.sql in this Supabase project, then run \"notify pgrst, 'reload schema';\" so PostgREST picks the tables up.",
     },

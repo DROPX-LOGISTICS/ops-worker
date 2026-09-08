@@ -316,7 +316,7 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
           kind: 'not_found',
           body: await noSnapshotBody(
             c.env,
-            'No Cash In Associate snapshot yet. Wait for the next hourly CIA cron (06:00–20:00 IST) or POST refresh.',
+            'No Cash In Associate snapshot yet. Wait for the next CIA cron (every 2 hours, 06:00–20:00 IST) or POST refresh.',
           ),
         };
       }
@@ -622,7 +622,7 @@ export async function ciaRefreshHandler(c: Context<{ Bindings: Env }>) {
     refreshProgress,
     message: tick?.processedStation
       ? `Fresh snapshot run started; processed ${tick.processedStation} (${attempted}/${total}). `
-        + 'Ops Pulse advances about every 15 seconds while the page is open; background cron is hourly (06:00–20:00 IST).'
+        + 'Ops Pulse advances about every 15 seconds while the page is open; background cron runs every 2 hours (06:00–20:00 IST).'
       : skipFirstTick
         ? 'Fresh snapshot run started. Ops Pulse will fetch the first station via chunked refresh.'
         : 'Fresh snapshot run started. Ops Pulse advances about every 15 seconds while the page is open.',
