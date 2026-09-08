@@ -586,12 +586,15 @@ async function finalizeFromSnapshots(
 }
 
 /**
- * Start a new daily snapshot run (or resume a same-day running one).
- * A running run from an older day is finalized as failed and superseded.
- * Pass `forceNew: true` for manual "Refresh all" so a stuck same-day run
- * (retry queue / failed stations) is superseded and progress resets to 0/N.
- * New runs force-sync the workforce roster (ACTIVE+INACTIVE+OFFBOARDED) once;
- * station processing happens on subsequent ticker-cron invocations.
+ * Start a CIA snapshot run for today's window.
+ *
+ * Same-day behavior (hourly 06:00–20:00 IST kicks):
+ * - Still running → resume (minute ticker keeps filling stations).
+ * - Finished → finalize and start a fresh run so values refresh that hour.
+ * - No active run → start a new run.
+ *
+ * Pass `forceNew: true` for manual "Refresh all" to supersede a stuck same-day run.
+ * New runs force-sync the workforce roster once; stations advance on ticker ticks.
  */
 export async function startCiaSnapshotRun(
   env: Env,
@@ -607,21 +610,23 @@ export async function startCiaSnapshotRun(
       const counters = await store.syncRunCountersFromSnapshots(existing.id);
       const total = stationList().length;
       const complete = counters.finishedCount >= total && counters.inFlightCount === 0;
-      if (complete) {
-        await finalizeFromSnapshots(env, existing.id, total);
+      if (!complete) {
+        return { run: (await store.getRun(existing.id)) ?? existing, resumed: true };
       }
-      return { run: (await store.getRun(existing.id)) ?? existing, resumed: true };
+      // Today's cycle finished — close it and open the next hourly refresh.
+      await finalizeFromSnapshots(env, existing.id, total);
+    } else {
+      const counters = await store.syncRunCountersFromSnapshots(existing.id);
+      await store.finalizeRun({
+        runId: existing.id,
+        status: 'failed',
+        stationsOk: counters.stationsOk,
+        stationsFailed: counters.stationsFailed + counters.retryQueuedCount + counters.processingCount,
+        error: forceNew
+          ? 'Superseded by manual Refresh all'
+          : 'Superseded by a newer run',
+      });
     }
-    const counters = await store.syncRunCountersFromSnapshots(existing.id);
-    await store.finalizeRun({
-      runId: existing.id,
-      status: 'failed',
-      stationsOk: counters.stationsOk,
-      stationsFailed: counters.stationsFailed + counters.retryQueuedCount + counters.processingCount,
-      error: forceNew
-        ? 'Superseded by manual Refresh all'
-        : 'Superseded by a newer run',
-    });
   }
 
   await loadWorkforceRosterMap(env, { forceRefresh: true }).catch((err) => {
@@ -777,32 +782,32 @@ export async function refreshCiaStation(
   return { runId: run.id, snapshotStatus: 'error', error: result.error };
 }
 
-/** Daily cron (06:00 IST): start/resume the run, then advance one station. */
+/** Hourly cron (06:00–20:00 IST): start/resume the run, then advance one station. */
 export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
   const store = createCiaSnapshotStore(env);
   const { run } = await startCiaSnapshotRun(env);
   await store.reclaimStaleProcessingClaims(run.id);
   const counters = await store.syncRunCountersFromSnapshots(run.id);
   if (counters.activeProcessingCount >= CIA_MAX_IN_FLIGHT) {
-    console.log(`CIA daily run ${run.id} skipped: station already in flight`);
+    console.log(`CIA hourly run ${run.id} skipped: station already in flight`);
     return (await store.getRun(run.id)) ?? run;
   }
 
   const viaPulse = await continueViaOpsPulse(env, run.id);
   if (viaPulse.processedStation) {
     console.log(
-      `CIA daily run ${run.id} via Ops Pulse station=${viaPulse.processedStation} done=${viaPulse.done}`,
+      `CIA hourly run ${run.id} via Ops Pulse station=${viaPulse.processedStation} done=${viaPulse.done}`,
     );
     return (await store.getRun(run.id)) ?? run;
   }
   try {
     const tick = await processCiaSnapshotTick(env, run.id);
     console.log(
-      `CIA daily run ${run.id} station=${tick.processedStation ?? 'none'} done=${tick.done}`,
+      `CIA hourly run ${run.id} station=${tick.processedStation ?? 'none'} done=${tick.done}`,
     );
     return (await store.getRun(run.id)) ?? run;
   } catch (err) {
-    console.error('CIA daily first-station kick failed', err);
+    console.error('CIA hourly first-station kick failed', err);
     return run;
   }
 }

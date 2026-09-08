@@ -121,14 +121,18 @@ app.get('/api/admin/workforce/associates/:transporterId', getWorkforceAssociateH
 
 app.notFound((c) => c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404));
 
-/** Cron that starts the daily Cash In Associate run (06:00 IST). */
-const CIA_DAILY_CRON = '30 0 * * *';
+/**
+ * Same-day CIA refresh kicks: 06:00–20:00 IST inclusive (= 00:30–14:30 UTC).
+ * Cloudflare reports the expression as configured in wrangler.toml.
+ */
+const CIA_HOURLY_CRON = '30 0-14 * * *';
 
 /**
- * Cash In Associate snapshots:
- * - 00:30 UTC (06:00 IST): start/resume the daily run + first 7-day chunk.
- * - Every 3 minutes: one 7-day chunk of the next unfinished station (in-process,
- *   no nested Worker HTTP — that path hits Cloudflare 1042).
+ * Cash In Associate snapshots (same calendar day):
+ * - :30 past each hour 00–14 UTC (06:00–20:00 IST): start today's run at 06:00,
+ *   then each later hour refreshes values (resume if still running, else new cycle).
+ * - Every minute: advance one unfinished station/chunk (in-process; nested
+ *   Worker HTTP hits Cloudflare 1042).
  */
 async function scheduled(
   event: ScheduledEvent,
@@ -136,9 +140,9 @@ async function scheduled(
   ctx: ExecutionContext,
 ): Promise<void> {
   const job =
-    event.cron === CIA_DAILY_CRON
+    event.cron === CIA_HOURLY_CRON
       ? ciaDailyCron(env).then((run) => {
-          console.log(`CIA daily run ${run.id} status=${run.status}`);
+          console.log(`CIA hourly run ${run.id} status=${run.status}`);
         })
       : ciaTickerCron(env).then((tick) => {
           if (tick.processedStation) {

@@ -27,10 +27,10 @@ PUBLIC_WORKER_URL = "https://cash-recon-worker.withered-voice-1c40.workers.dev"
 OPS_PULSE_URL = "https://ops.dropxlogistics.com"
 # Optional: WORKFORCE_BASE_URL / WORKFORCE_COMPANY_ID (defaults in src/config.ts)
 
-# CIA snapshots: daily 06:00 IST. Ticker every minute asks Ops Pulse to
-# refresh one full station (same BFF path as Update numbers).
+# CIA snapshots: hourly 06:00–20:00 IST (00:30–14:30 UTC). Ticker every minute
+# asks Ops Pulse to refresh one full station (same BFF path as Update numbers).
 [triggers]
-crons = ["30 0 * * *", "* * * * *"]
+crons = ["30 0-14 * * *", "* * * * *"]
 
 # Secrets (Set locally via .dev.vars or production via 'wrangler secret put')
 # - SUPABASE_URL
@@ -57,7 +57,7 @@ PUBLIC_WORKER_URL = "https://cash-recon-worker.withered-voice-1c40.workers.dev"
 OPS_PULSE_URL = "https://ops.dropxlogistics.com"
 
 [env.staging.triggers]
-crons = ["30 0 * * *", "* * * * *"]
+crons = ["30 0-14 * * *", "* * * * *"]
 
 # Staging Secrets (Set via 'wrangler secret put --env staging')
 # - SUPABASE_URL

@@ -316,7 +316,7 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
           kind: 'not_found',
           body: await noSnapshotBody(
             c.env,
-            'No Cash In Associate snapshot yet. Wait for the 06:00 IST cron or POST refresh.',
+            'No Cash In Associate snapshot yet. Wait for the next hourly CIA cron (06:00–20:00 IST) or POST refresh.',
           ),
         };
       }

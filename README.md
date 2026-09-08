@@ -44,7 +44,7 @@ Content-Type: application/json
 | `src/session/*`                        | Auto-login, ensure / refresh                               |
 | `src/routes/executiveAmazon.ts`        | Executive station / SCC / remittance endpoints             |
 | `src/services/cashInAssociate.ts`      | CIA + Cash At Station reconcile vs bank deposits           |
-| `src/services/ciaSnapshotRunner.ts`    | Daily 06:00 IST run; one-station-per-tick cron             |
+| `src/services/ciaSnapshotRunner.ts`    | Hourly 06:00–20:00 IST refresh; one-station-per-tick cron  |
 | `src/utils/expectedCash.ts`            | Sum CASH `receivedAmount` from shipment lists              |
 | `src/index.ts`                         | Hono routes + CORS + CIA crons                             |
 
@@ -98,8 +98,8 @@ Daily network reconcile of ageing cash (CIA + Cash At Station) vs bank deposits.
 
 | Schedule | Cron (UTC) | Behavior |
 | -------- | ---------- | -------- |
-| **06:00 IST** | `30 0 * * *` | Start/resume daily run + workforce roster sync |
-| **Every 3 min** | `*/3 * * * *` | Process **exactly one** unfinished station |
+| **06:00–20:00 IST hourly** | `30 0-14 * * *` | Start today's run at 06:00; each later hour refreshes values (resume in-flight, else new cycle) + workforce roster sync |
+| **Every minute** | `* * * * *` | Process **exactly one** unfinished station/chunk |
 
 Workflow guarantees:
 
