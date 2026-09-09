@@ -186,6 +186,28 @@ export function mergeSnapshotIntoAgeing(
 }
 
 /**
+ * Tracking IDs already anchored to some OTHER business date by the snapshot — must be
+ * excluded from `businessDate`'s own ageing packages before merging, or a TID whose late
+ * handover moved it into this date's raw feed gets counted twice: once for the day it was
+ * anchored to, and again here just because its lastUpdatedTime now happens to fall in
+ * this window too.
+ */
+export async function loadTrackingIdsClaimedByOtherDates(
+  env: Env,
+  stationCode: string,
+  businessDate: string,
+): Promise<Set<string>> {
+  try {
+    const store = createCashTidSnapshotStore(env);
+    const ids = await store.listOpenTrackingIdsAnchoredElsewhere(stationCode.trim().toUpperCase(), businessDate);
+    return new Set(ids);
+  } catch (err) {
+    console.error(`Cash-TID snapshot claimed-elsewhere lookup failed for ${stationCode}/${businessDate}`, err);
+    return new Set();
+  }
+}
+
+/**
  * Snapshot rows for `businessDate`, re-checked live and reshaped as AgeingPackageDetail so
  * they can merge straight into the normal ageing-cash computation — the fix for "the store
  * only paid the next day": that TID is still counted against businessDate, not whatever day

@@ -127,6 +127,24 @@ export class CashTidSnapshotStore {
     return (data ?? []).map((row) => toRow(row as SnapshotRow));
   }
 
+  /**
+   * Tracking IDs anchored to a DIFFERENT business date than the one given — i.e. cash
+   * already claimed by an earlier day. Without excluding these, a TID captured for D0
+   * whose late handover later moves its lastUpdatedTime to D0+1 would count once via
+   * D0's snapshot merge AND again naturally in D0+1's own ageing-feed query.
+   */
+  async listOpenTrackingIdsAnchoredElsewhere(stationCode: string, businessDate: string): Promise<string[]> {
+    const { data, error } = await this.client
+      .from('cod_cash_tid_snapshots')
+      .select('tracking_id')
+      .eq('station_code', stationCode.trim().toUpperCase())
+      .neq('business_date', businessDate);
+    if (error) {
+      throw new Error(`CashTidSnapshotStore.listOpenTrackingIdsAnchoredElsewhere failed: ${error.message}`);
+    }
+    return (data ?? []).map((row) => row.tracking_id as string);
+  }
+
   /** Cash has been accounted for (package moved out of CASH_AT_STATION) — delete the row. */
   async deleteResolved(stationCode: string, trackingIds: string[]): Promise<number> {
     if (trackingIds.length === 0) return 0;

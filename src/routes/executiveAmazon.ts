@@ -9,7 +9,11 @@ import { checkLiability } from '../validators/liability';
 import { buildExpectedCashFromAgeing } from '../utils/expectedCash';
 import { enrichReconciliationWithAgeing } from '../utils/reconState';
 import { loadWorkforceRosterMap } from '../services/workforceRoster';
-import { loadSnapshotPackagesForDate, mergeSnapshotIntoAgeing } from '../services/cashTidSnapshot';
+import {
+  loadSnapshotPackagesForDate,
+  loadTrackingIdsClaimedByOtherDates,
+  mergeSnapshotIntoAgeing,
+} from '../services/cashTidSnapshot';
 import {
   reconcileRemittancePending,
 } from '../services/remittancePending';
@@ -154,7 +158,7 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
     const provider = createStationDataProvider(c.env);
     const drivers = await provider.getActiveDrivers(stationCode, session.auth);
 
-    const [rawReconciliation, ageingPackagesRaw, roster, snapshotPackages] = await Promise.all([
+    const [rawReconciliation, ageingPackagesRaw, roster, snapshotPackages, claimedElsewhere] = await Promise.all([
       provider.getDriverReconciliation(stationCode, range, drivers, session.auth),
       provider.getAgeingDrillDownData(
         stationCode,
@@ -172,8 +176,16 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
         console.error(`Cash-TID snapshot merge lookup failed for ${stationCode}/${date}`, err);
         return [] as AgeingPackageDetail[];
       }),
+      // The other half of the fix: a TID already anchored to a DIFFERENT date must not
+      // also be counted here just because its lastUpdatedTime now happens to fall in
+      // this date's window too (that's the double-count the merge above would otherwise
+      // create once the late handover actually lands).
+      loadTrackingIdsClaimedByOtherDates(c.env, stationCode, date),
     ]);
-    const ageingPackages = mergeSnapshotIntoAgeing(ageingPackagesRaw, snapshotPackages);
+    const ageingPackagesOwnedByThisDate = claimedElsewhere.size
+      ? ageingPackagesRaw.filter((pkg) => !claimedElsewhere.has(pkg.trackingId))
+      : ageingPackagesRaw;
+    const ageingPackages = mergeSnapshotIntoAgeing(ageingPackagesOwnedByThisDate, snapshotPackages);
 
     const expectedCash = buildExpectedCashFromAgeing(
       drivers,
