@@ -8,6 +8,7 @@ import type {
   RemittanceShipmentDetail,
   AgeingPackageDetail,
   AmazonAuthContext,
+  PackageSummaryEntry,
 } from '../types';
 import type { DateRange } from '../utils/dateRange';
 import {
@@ -108,6 +109,18 @@ interface RawAgeingPackage {
 
 interface AgeingDrillDownResponse {
   packageResultList?: RawAgeingPackage[];
+}
+
+interface RawPackageSummary {
+  trackingId?: string;
+  currentPackageState?: string | null;
+  lastUpdatedTime?: number | string | null;
+  driverId?: string | null;
+  paymentMethod?: string | null;
+  expectedPaymentMethod?: string | null;
+  orderAmount?: number | null;
+  receivableAmount?: string | number | null;
+  shipmentDate?: number | string | null;
 }
 
 function parseAmount(value: string | number | null | undefined): number {
@@ -568,5 +581,60 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       actualAmount: round2(Number(details.actualAmount ?? 0) || 0),
       shipments,
     };
+  }
+
+  /**
+   * Look up specific tracking IDs by ID (`/os/batchGetPackageSummary`), independent of any
+   * date filter — used to re-check cash-TID-snapshot rows for their current state, since a
+   * late cash handover moves the ageing feed's date bucket (lastUpdatedTime) to the day the
+   * store actually pays, not the day the shipment was delivered.
+   */
+  async getPackageSummaryBatch(
+    stationCode: string,
+    trackingIds: string[],
+    auth: AmazonAuthContext,
+  ): Promise<PackageSummaryEntry[]> {
+    if (trackingIds.length === 0) return [];
+    const { resourcePath, processName, httpMethod } = AMAZON_RESOURCES.batchGetPackageSummary;
+    const data = await this.callProxy<
+      {
+        idType: string;
+        identifiers: string[];
+        nodeId: string;
+        includeFields: string[];
+      },
+      { packageSummaryList?: RawPackageSummary[] }
+    >(
+      resourcePath,
+      processName,
+      {
+        idType: 'TRACKING_ID',
+        identifiers: trackingIds,
+        nodeId: stationCode.trim().toUpperCase(),
+        includeFields: [
+          'ESTIMATED_ARRIVAL_DATE',
+          'SCHEDULED_DELIVERY_TIME',
+          'SHIP_METHOD',
+          'PROVIDER_ID',
+          'SHIP_DATE',
+          'SHIP_OPTION',
+          'PROMISED_DELIVERY_DATE',
+        ],
+      },
+      auth,
+      { httpMethod, refererPath: '/station/dashboard/search' },
+    );
+
+    return (data.packageSummaryList ?? []).map((row) => ({
+      trackingId: row.trackingId ?? '',
+      currentPackageState: row.currentPackageState ?? null,
+      lastUpdatedTime: row.lastUpdatedTime == null ? null : Number(row.lastUpdatedTime),
+      driverId: row.driverId ?? null,
+      paymentMethod: row.paymentMethod ?? null,
+      expectedPaymentMethod: row.expectedPaymentMethod ?? null,
+      orderAmount: row.orderAmount == null ? null : Number(row.orderAmount),
+      receivableAmount: row.receivableAmount == null ? null : parseAmount(row.receivableAmount),
+      shipmentDate: row.shipmentDate == null ? null : Number(row.shipmentDate),
+    }));
   }
 }

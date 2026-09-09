@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import type { Env, AmazonAuthContext } from '../types';
+import type { Env, AmazonAuthContext, AgeingPackageDetail } from '../types';
 import { ValidationInputError } from '../errors';
 import { ALLOWED_STATIONS, API_CACHE_TTL_MS } from '../config';
 import { getBusinessDayRange, todayIstYmd } from '../utils/dateRange';
@@ -9,6 +9,7 @@ import { checkLiability } from '../validators/liability';
 import { buildExpectedCashFromAgeing } from '../utils/expectedCash';
 import { enrichReconciliationWithAgeing } from '../utils/reconState';
 import { loadWorkforceRosterMap } from '../services/workforceRoster';
+import { loadSnapshotPackagesForDate, mergeSnapshotIntoAgeing } from '../services/cashTidSnapshot';
 import {
   reconcileRemittancePending,
 } from '../services/remittancePending';
@@ -153,7 +154,7 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
     const provider = createStationDataProvider(c.env);
     const drivers = await provider.getActiveDrivers(stationCode, session.auth);
 
-    const [rawReconciliation, ageingPackages, roster] = await Promise.all([
+    const [rawReconciliation, ageingPackagesRaw, roster, snapshotPackages] = await Promise.all([
       provider.getDriverReconciliation(stationCode, range, drivers, session.auth),
       provider.getAgeingDrillDownData(
         stationCode,
@@ -164,7 +165,15 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
         Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '5'),
       ),
       loadWorkforceRosterMap(c.env),
+      // Fills back in tracking IDs a late cash handover moved out of this date's ageing
+      // bucket (see services/cashTidSnapshot.ts) — never throws, so a snapshot hiccup
+      // degrades to "ageing feed only" instead of failing this whole request.
+      loadSnapshotPackagesForDate(c.env, stationCode, date).catch((err) => {
+        console.error(`Cash-TID snapshot merge lookup failed for ${stationCode}/${date}`, err);
+        return [] as AgeingPackageDetail[];
+      }),
     ]);
+    const ageingPackages = mergeSnapshotIntoAgeing(ageingPackagesRaw, snapshotPackages);
 
     const expectedCash = buildExpectedCashFromAgeing(
       drivers,

@@ -6,6 +6,7 @@ import type {
   RemittanceDetails,
   AgeingPackageDetail,
   AmazonAuthContext,
+  PackageSummaryEntry,
 } from '../types';
 import type { DateRange } from '../utils/dateRange';
 
@@ -67,4 +68,14 @@ export interface StationDataProvider {
 
   /** Shipment-level remittance details for pending trackingId diff. */
   getRemittanceDetailsForExcel(remittanceId: string, auth: AmazonAuthContext): Promise<RemittanceDetails>;
+
+  /**
+   * Look up specific tracking IDs by ID (`/os/batchGetPackageSummary`) — for re-checking
+   * cash-TID-snapshot rows regardless of what day their lastUpdatedTime has since moved to.
+   */
+  getPackageSummaryBatch(
+    stationCode: string,
+    trackingIds: string[],
+    auth: AmazonAuthContext,
+  ): Promise<PackageSummaryEntry[]>;
 }

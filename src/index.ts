@@ -29,6 +29,8 @@ import {
   ciaTouchClaimHandler,
 } from './routes/cashInAssociate';
 import { ciaDailyCron } from './services/ciaSnapshotRunner';
+import { runCashTidSnapshotHandler } from './routes/cashTidSnapshot';
+import { runCashTidSnapshotForAllStations } from './services/cashTidSnapshot';
 import { dbDiagHandler } from './routes/dbDiag';
 import { listNotificationsHandler, acknowledgeNotificationHandler } from './routes/notifications';
 import {
@@ -81,6 +83,7 @@ app.post('/api/admin/executive/driver-reconciliation', driverReconciliationHandl
 app.post('/api/admin/executive/liability-summary', liabilitySummaryExecutiveHandler);
 app.post('/api/admin/executive/remittance', remittanceHandler);
 app.post('/api/admin/executive/remittance/verify', remittanceVerifyHandler);
+app.post('/api/admin/cash-tid-snapshot/run', runCashTidSnapshotHandler);
 app.get('/api/admin/executive/cash-in-associate/network', ciaNetworkHandler);
 app.get('/api/admin/executive/cash-in-associate/daily-ledger', ciaDailyLedgerHandler);
 app.get('/api/admin/executive/cash-in-associate', ciaStationHandler);
@@ -128,6 +131,13 @@ app.notFound((c) => c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404));
 const CIA_REFRESH_CRON = '30 0,2,4,6,8,10,12,14 * * *';
 
 /**
+ * Cash-TID snapshot cutoff: 23:00 IST (= 17:30 UTC) daily. Resolves yesterday's still-open
+ * rows first (deletes ones no longer CASH_AT_STATION), then captures tonight's outstanding
+ * CASH_AT_STATION tracking IDs, then purges anything past the retention window.
+ */
+const CASH_TID_SNAPSHOT_CRON = '30 17 * * *';
+
+/**
  * Cash In Associate snapshots (cost-efficient):
  * - One cron only, every 2 hours 06:00–20:00 IST (no every-minute wakeups).
  * - Each kick starts/resumes today's run and bursts stations within a wall budget.
@@ -138,6 +148,23 @@ async function scheduled(
   env: Env,
   ctx: ExecutionContext,
 ): Promise<void> {
+  if (event.cron === CASH_TID_SNAPSHOT_CRON) {
+    ctx.waitUntil(
+      runCashTidSnapshotForAllStations(env)
+        .then((results) => {
+          const failed = results.filter((r) => !r.ok);
+          console.log(
+            `Cash-TID snapshot run: ${results.length} station(s), ${failed.length} failed`,
+          );
+          if (failed.length) console.warn('Cash-TID snapshot failures', failed);
+        })
+        .catch((err) => {
+          console.error('Cash-TID snapshot scheduled job failed', err);
+        }),
+    );
+    return;
+  }
+
   if (event.cron !== CIA_REFRESH_CRON) {
     console.warn(`CIA scheduled ignored unexpected cron: ${event.cron}`);
     return;

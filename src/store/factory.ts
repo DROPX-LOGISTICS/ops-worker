@@ -8,6 +8,7 @@ import { SupabaseWorkforceSessionStore } from './SupabaseWorkforceSessionStore';
 import { WorkforceAssociateStore } from './WorkforceAssociateStore';
 import { CiaSnapshotStore } from './CiaSnapshotStore';
 import { ApiResponseCacheStore } from './ApiResponseCacheStore';
+import { CashTidSnapshotStore } from './CashTidSnapshotStore';
 
 export function createOverrideStore(env: Env): OverrideStore {
   return new SupabaseOverrideStore(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
@@ -31,4 +32,8 @@ export function createCiaSnapshotStore(env: Env): CiaSnapshotStore {
 
 export function createApiResponseCacheStore(env: Env): ApiResponseCacheStore {
   return new ApiResponseCacheStore(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+}
+
+export function createCashTidSnapshotStore(env: Env): CashTidSnapshotStore {
+  return new CashTidSnapshotStore(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
 }

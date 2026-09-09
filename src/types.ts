@@ -549,3 +549,39 @@ export interface PipelineResult {
   steps: StepResult[];
   runId?: string;
 }
+
+/**
+ * One `/os/batchGetPackageSummary` result — the current, live state of a tracking ID,
+ * looked up by ID rather than by a date-filtered feed. Used to re-check tracking IDs
+ * captured by the cash-TID snapshot regardless of what day their lastUpdatedTime has
+ * since moved to.
+ */
+export interface PackageSummaryEntry {
+  trackingId: string;
+  currentPackageState: string | null;
+  lastUpdatedTime: number | null;
+  driverId: string | null;
+  paymentMethod: string | null;
+  expectedPaymentMethod: string | null;
+  orderAmount: number | null;
+  receivableAmount: number | null;
+  shipmentDate: number | null;
+}
+
+/**
+ * One tracking ID captured by the 11 PM cash-TID snapshot: still CASH_AT_STATION
+ * (cash not yet handed to the station) as of that station's cutoff for `businessDate`.
+ * Re-checked by trackingId (batchGetPackageSummary) rather than by re-querying the
+ * ageing feed for `businessDate`, since a late handover moves lastUpdatedTime to the
+ * day the store actually pays, not the day the shipment was delivered.
+ */
+export interface CashTidSnapshotRow {
+  stationCode: string;
+  trackingId: string;
+  businessDate: string;
+  capturedState: string | null;
+  expectedAmount: number;
+  driverId: string | null;
+  firstCapturedAt: string;
+  lastCheckedAt: string;
+}

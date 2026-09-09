@@ -62,7 +62,26 @@ export const AMAZON_RESOURCES = {
     resourcePath: '/v1/getRemittanceDetailsForExcel',
     processName: 'tmSystem',
   },
+  /** Look up specific tracking IDs by ID, independent of any date filter. */
+  batchGetPackageSummary: {
+    resourcePath: '/os/batchGetPackageSummary',
+    processName: 'oculus',
+    httpMethod: 'post' as const,
+  },
 } as const;
+
+/**
+ * Cash-TID snapshot: captures CASH_AT_STATION tracking IDs nightly at this IST hour, so a
+ * store that hands over cash a day late (moving the package's lastUpdatedTime to the next
+ * day) still has its cash attributed to the day it was actually delivered/expected.
+ */
+export const CASH_TID_SNAPSHOT_CUTOFF_HOUR_IST = 23;
+
+/** Max tracking IDs per /os/batchGetPackageSummary call (traffic showed ~11 in one batch; stay well under any cap). */
+export const CASH_TID_BATCH_CHUNK_SIZE = 25;
+
+/** Snapshot rows older than this are purged regardless of resolution status. */
+export const CASH_TID_SNAPSHOT_RETENTION_DAYS = 30;
 
 /** Prior calendar days for Cash In Associate snapshots (excludes today). */
 export const CIA_LOOKBACK_DAYS = 31;
