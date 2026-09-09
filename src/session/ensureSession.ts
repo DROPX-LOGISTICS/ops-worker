@@ -26,10 +26,23 @@ export type EnsureSessionResult =
       needsLocalLogin?: boolean;
     };
 
+/** How long to wait for another DropX worker's in-flight Amazon login. */
+const SHARED_LOGIN_WAIT_MS = 45_000;
+const SHARED_LOGIN_POLL_MS = 2_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * 1. Resolve portal account from request station (default vs dedicated).
  * 2. If an active session for that account exists, probe Amazon.
- * 3. Otherwise auto-login with that account's credentials.
+ * 3. If another org worker is already logging in (shared Supabase lock), wait
+ *    for that session instead of failing with LOGIN_IN_PROGRESS.
+ * 4. Otherwise auto-login with that account's credentials.
+ *
+ * cash-recon, Report-auto, and amazon-edd all share `amazon_sessions` +
+ * `amazon_portal_credentials` in the same Supabase project.
  */
 export async function ensureValidAmazonSession(
   env: Env,
@@ -54,6 +67,18 @@ export async function ensureValidAmazonSession(
       .catch((e) => console.error('markExpired failed', e));
   }
 
+  // Prefer the shared org login already in progress (Report-auto / EDD / CIA)
+  // over burning Browser Rendering or returning a hard 409 to Ops Pulse.
+  if (isLoginLockActive(creds?.loginLockedUntil)) {
+    const waited = await waitForSharedAmazonSession(
+      credentialStore,
+      provider,
+      scrapeStation,
+      accountKey,
+    );
+    if (waited) return waited;
+  }
+
   if (!env.BROWSER) {
     return {
       ok: false,
@@ -73,7 +98,55 @@ export async function ensureValidAmazonSession(
     accountKey,
   });
 
+  if (!refreshed.ok && refreshed.code === 'LOGIN_IN_PROGRESS') {
+    const waited = await waitForSharedAmazonSession(
+      credentialStore,
+      provider,
+      scrapeStation,
+      accountKey,
+    );
+    if (waited) return waited;
+
+    const retry = await refreshAmazonSession(env, {
+      triggeredBy: opts.triggeredBy || 'ensure-session-retry',
+      notifyOnFailure: opts.notifyOnFailure !== false,
+      stationCode: opts.stationCode,
+      accountKey,
+    });
+    return mapRefresh(retry, accountKey);
+  }
+
   return mapRefresh(refreshed, accountKey);
+}
+
+function isLoginLockActive(loginLockedUntil: string | null | undefined): boolean {
+  if (!loginLockedUntil) return false;
+  const ms = Date.parse(loginLockedUntil);
+  return Number.isFinite(ms) && ms > Date.now();
+}
+
+async function waitForSharedAmazonSession(
+  credentialStore: ReturnType<typeof createCredentialStore>,
+  provider: AmazonLogisticsProvider,
+  scrapeStation: string,
+  accountKey: string,
+): Promise<EnsureSessionResult | null> {
+  const deadline = Date.now() + SHARED_LOGIN_WAIT_MS;
+  let first = true;
+  while (Date.now() < deadline) {
+    if (!first) await sleep(SHARED_LOGIN_POLL_MS);
+    first = false;
+
+    const active = await credentialStore.getActive(accountKey);
+    if (!active) continue;
+    const auth = { cookie: active.cookie, xApiUsageKey: active.xApiUsageKey };
+    const valid = await probeSession(provider, scrapeStation, auth);
+    if (valid) {
+      console.log(`ensureValidAmazonSession: adopted shared session for ${accountKey}`);
+      return { ok: true, auth, credentialId: active.id, source: 'cached', accountKey };
+    }
+  }
+  return null;
 }
 
 function resolveScrapeStation(
@@ -89,6 +162,16 @@ function resolveScrapeStation(
 
 function mapRefresh(refreshed: RefreshSessionResult, accountKey: string): EnsureSessionResult {
   if (!refreshed.ok) {
+    if (refreshed.code === 'LOGIN_IN_PROGRESS') {
+      return {
+        ok: false,
+        code: refreshed.code,
+        accountKey,
+        error:
+          `Another DropX worker is refreshing the shared Amazon login for account "${accountKey}". `
+          + 'Sessions are shared across cash-recon, Report-auto, and amazon-edd — retry in about 30 seconds.',
+      };
+    }
     return { ok: false, code: refreshed.code, error: refreshed.error, accountKey };
   }
   return {

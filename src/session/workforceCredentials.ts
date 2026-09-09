@@ -38,32 +38,50 @@ export class WorkforceLoginStateStore {
   async tryAcquireLoginLock(accountKey = DEFAULT_PORTAL_ACCOUNT, ttlSeconds = 150): Promise<boolean> {
     const key = accountKey.trim() || DEFAULT_PORTAL_ACCOUNT;
     const now = Date.now();
-    const { data } = await this.client
+    const nowIso = new Date(now).toISOString();
+    const until = new Date(now + ttlSeconds * 1000).toISOString();
+
+    const { data: updated, error } = await this.client
+      .from('workforce_login_state')
+      .update({
+        login_locked_until: until,
+        updated_at: nowIso,
+      })
+      .eq('account_key', key)
+      .or(`login_locked_until.is.null,login_locked_until.lte."${nowIso}"`)
+      .select('account_key')
+      .maybeSingle();
+
+    if (error) {
+      console.error('WorkforceLoginStateStore.tryAcquireLoginLock failed', error);
+      // Fail open so a missing table doesn't block login forever.
+      return true;
+    }
+    if (updated) return true;
+
+    const { data: existing } = await this.client
       .from('workforce_login_state')
       .select('login_locked_until')
       .eq('account_key', key)
       .maybeSingle();
 
-    const lockedUntil = data?.login_locked_until
-      ? Date.parse(data.login_locked_until as string)
+    const lockedUntil = existing?.login_locked_until
+      ? Date.parse(existing.login_locked_until as string)
       : 0;
     if (lockedUntil && lockedUntil > now) {
       return false;
     }
 
-    const until = new Date(now + ttlSeconds * 1000).toISOString();
-    const { error } = await this.client.from('workforce_login_state').upsert(
-      {
-        account_key: key,
-        login_locked_until: until,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'account_key' },
-    );
+    const { error: insertError } = await this.client.from('workforce_login_state').insert({
+      account_key: key,
+      login_locked_until: until,
+      updated_at: nowIso,
+    });
 
-    if (error) {
-      console.error('WorkforceLoginStateStore.tryAcquireLoginLock failed', error);
-      // Fail open so a missing table doesn't block login forever.
+    if (insertError) {
+      // Unique conflict → another worker won the first insert / lock race.
+      if ((insertError as { code?: string }).code === '23505') return false;
+      console.error('WorkforceLoginStateStore.tryAcquireLoginLock insert failed', insertError);
       return true;
     }
     return true;

@@ -201,8 +201,9 @@ export class PortalCredentialStore {
   }
 
   /**
-   * Acquire a short login lock for one account. Returns false if another login
-   * for the same account is already in progress.
+   * Acquire a short login lock for one account (compare-and-swap).
+   * Returns false if another DropX worker already holds the lock for this
+   * shared `amazon_portal_credentials` row.
    */
   async tryAcquireLoginLock(accountKey?: string, ttlSeconds = 120): Promise<boolean> {
     const key = normalizeAccountKey(accountKey);
@@ -224,20 +225,21 @@ export class PortalCredentialStore {
     }
     if (!row) return false;
 
-    if (row.login_locked_until && row.login_locked_until > nowIso) {
-      return false;
-    }
-
-    const { error } = await this.client
+    // Atomic: only claim when unlocked or expired. Avoids two workers both
+    // passing a non-atomic read check and launching parallel Amazon logins.
+    const { data, error } = await this.client
       .from('amazon_portal_credentials')
       .update({ login_locked_until: until })
-      .eq('account_key', key);
+      .eq('account_key', key)
+      .or(`login_locked_until.is.null,login_locked_until.lte."${nowIso}"`)
+      .select('account_key')
+      .maybeSingle();
 
     if (error) {
       console.error('PortalCredentialStore.tryAcquireLoginLock failed', error);
       return false;
     }
-    return true;
+    return Boolean(data);
   }
 
   /**
