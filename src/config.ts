@@ -94,7 +94,7 @@ export const CIA_LOOKBACK_DAYS = 31;
 export const CIA_REFRESH_CHUNK_DAYS = 7;
 
 /** Max concurrent getRemittanceDetailsForExcel calls in CIA reconcile. */
-export const CIA_REMITTANCE_DETAILS_CONCURRENCY = 3;
+export const CIA_REMITTANCE_DETAILS_CONCURRENCY = 5;
 
 /**
  * Cap on getRemittanceDetailsForExcel calls per station (subrequest budget).
