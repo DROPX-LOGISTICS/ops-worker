@@ -794,8 +794,9 @@ export async function refreshCiaStation(
  * Every-2-hour cron (06:00–20:00 IST): start/resume today's run, then burst as
  * many stations as fit the wall-time budget via Ops Pulse (same full-station
  * path as manual refresh). Mark the run silent so the CIA UI does not show
- * "refresh in progress". Fall back to in-worker 7-day chunks only when Ops
- * Pulse is not configured.
+ * "refresh in progress". Prefer parallel continues up to CIA_MAX_IN_FLIGHT so
+ * cash-recon can hit Amazon alongside Report-auto / EDD on the warm shared
+ * cookie. Fall back to in-worker 7-day chunks only when Ops Pulse is not configured.
  */
 export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
   const store = createCiaSnapshotStore(env);
@@ -811,6 +812,13 @@ export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
   );
   let consecutivePulseMisses = 0;
 
+  // Warm the shared org session once so parallel station pulls (and sibling
+  // workers) do not race Puppeteer login.
+  const session = await ensureValidAmazonSession(env, { triggeredBy: 'cia-daily-cron' });
+  if (!session.ok) {
+    console.warn('CIA cron: shared Amazon session warm-up failed', session.error);
+  }
+
   while (
     steps < CIA_HOURLY_MAX_STEPS
     && Date.now() - burstStartedAt < CIA_HOURLY_WALL_MS
@@ -824,35 +832,44 @@ export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
       break;
     }
 
-    // Another caller (open tab / overlapping continue) owns the portal session.
-    // Stop the burst instead of spinning — next kick resumes.
-    if (counters.activeProcessingCount >= CIA_MAX_IN_FLIGHT) {
-      console.log(`CIA refresh burst ${run.id} pause: station already in flight`);
-      break;
-    }
-
     const frontendLease = await readCiaFrontendLease(env);
     if (isCiaFrontendLeaseActive(frontendLease, { runId: run.id })) {
       console.log(`CIA refresh burst ${run.id} pause: frontend lease active`);
       break;
     }
 
-    const viaPulse = await continueViaOpsPulse(env, run.id, { retries: 2 });
-    if (viaPulse.processedStation) {
-      consecutivePulseMisses = 0;
-      steps += 1;
-      lastStation = viaPulse.processedStation;
-      run = viaPulse.run ?? (await store.getRun(run.id)) ?? run;
-      if (viaPulse.done) {
-        await clearCiaRunSilent(env);
-        break;
-      }
-      continue;
+    const freeSlots = Math.max(0, CIA_MAX_IN_FLIGHT - counters.activeProcessingCount);
+    if (freeSlots <= 0) {
+      console.log(`CIA refresh burst ${run.id} pause: ${counters.activeProcessingCount} station(s) in flight`);
+      break;
     }
 
     if (opsPulseConfigured) {
-      // Stick to the fast BFF path. Slow 7-day worker chunks make cron lag
-      // far behind manual refresh and are a common "stuck" source.
+      const batchSize = Math.min(freeSlots, CIA_HOURLY_MAX_STEPS - steps);
+      const batch = await Promise.all(
+        Array.from({ length: batchSize }, () => continueViaOpsPulse(env, run.id, { retries: 1 })),
+      );
+      let processedInBatch = 0;
+      for (const viaPulse of batch) {
+        if (!viaPulse.processedStation) continue;
+        processedInBatch += 1;
+        steps += 1;
+        lastStation = viaPulse.processedStation;
+        run = viaPulse.run ?? (await store.getRun(run.id)) ?? run;
+        if (viaPulse.done) {
+          await clearCiaRunSilent(env);
+          console.log(
+            `CIA refresh burst run=${run.id} steps=${steps} last=${lastStation ?? 'none'} `
+              + `elapsedMs=${Date.now() - burstStartedAt}`,
+          );
+          return (await store.getRun(run.id)) ?? run;
+        }
+      }
+      if (processedInBatch > 0) {
+        consecutivePulseMisses = 0;
+        continue;
+      }
+
       consecutivePulseMisses += 1;
       if (
         consecutivePulseMisses < 3
@@ -876,15 +893,26 @@ export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
     }
 
     try {
-      const tick = await processCiaSnapshotTick(env, run.id);
-      run = tick.run ?? (await store.getRun(run.id)) ?? run;
-      if (!tick.processedStation) break;
-      steps += 1;
-      lastStation = tick.processedStation;
-      if (tick.done) {
-        await clearCiaRunSilent(env);
-        break;
+      const tickBatch = await Promise.all(
+        Array.from({ length: freeSlots }, () => processCiaSnapshotTick(env, run.id)),
+      );
+      let progressed = false;
+      for (const tick of tickBatch) {
+        run = tick.run ?? (await store.getRun(run.id)) ?? run;
+        if (!tick.processedStation) continue;
+        progressed = true;
+        steps += 1;
+        lastStation = tick.processedStation;
+        if (tick.done) {
+          await clearCiaRunSilent(env);
+          console.log(
+            `CIA refresh burst run=${run.id} steps=${steps} last=${lastStation ?? 'none'} `
+              + `elapsedMs=${Date.now() - burstStartedAt}`,
+          );
+          return (await store.getRun(run.id)) ?? run;
+        }
       }
+      if (!progressed) break;
     } catch (err) {
       console.error('CIA refresh burst step failed', err);
       break;
@@ -900,9 +928,9 @@ export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
 
 /**
  * Ticker: one full station via Ops Pulse (same as Update numbers), else one
- * 7-day chunk. If anything is already in flight (e.g. the frontend auto-loop)
- * the ticker backs off — never run two stations in parallel because they
- * share one Amazon portal session.
+ * 7-day chunk. Backs off when CIA_MAX_IN_FLIGHT stations are already in
+ * flight (open tab / cron burst). Shared cookie allows sibling workers to
+ * keep hitting Amazon in parallel.
  */
 export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
   const store = createCiaSnapshotStore(env);

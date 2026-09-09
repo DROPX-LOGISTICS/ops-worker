@@ -136,11 +136,12 @@ export const CIA_CHUNK_PENDING_MARKER = '__CHUNK_PENDING__';
 export const CIA_PROCESSING_STALE_MS = 4 * 60 * 1000;
 
 /**
- * Only one station may hold a fresh PROCESSING claim at a time.
- * Cron + the open CIA page + overlapping continue calls used to claim dozens
- * of stations, then die, leaving the UI in a 20-in-flight loop.
+ * Max stations with a fresh PROCESSING claim at once.
+ * Shared Amazon cookie is warm across cash-recon / Report-auto / EDD; login
+ * stays single-flight. Cap at 2 because each CIA station is a heavy
+ * ageing+remittance pull (heavier than EDD performance).
  */
-export const CIA_MAX_IN_FLIGHT = 1;
+export const CIA_MAX_IN_FLIGHT = 2;
 
 /**
  * Every-2-hour CIA burst budget (wall clock). Prefer Ops Pulse full-station
