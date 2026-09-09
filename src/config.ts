@@ -124,17 +124,17 @@ export const CIA_PROCESSING_STALE_MS = 4 * 60 * 1000;
 export const CIA_MAX_IN_FLIGHT = 1;
 
 /**
- * Hourly CIA burst budget (wall clock). Used by the every-2-hour cron kick.
- * Network-bound Amazon/Ops Pulse work dominates; keep under typical Worker
- * scheduled limits and leave headroom.
+ * Every-2-hour CIA burst budget (wall clock). Prefer Ops Pulse full-station
+ * continues (same path as manual refresh). waitUntil keeps the cron alive
+ * past the scheduled event return.
  */
-export const CIA_HOURLY_WALL_MS = 45_000;
+export const CIA_HOURLY_WALL_MS = 90_000;
 
 /**
- * Max station/chunk steps per cron burst. Caps CPU if Ops Pulse is down and
- * we fall back to smaller in-worker chunks.
+ * Max station steps per cron burst when Ops Pulse is available.
+ * Cap lower when falling back to in-worker 7-day chunks (see ciaDailyCron).
  */
-export const CIA_HOURLY_MAX_STEPS = 60;
+export const CIA_HOURLY_MAX_STEPS = 40;
 
 /** TTL for read-API response caching (per-isolate). Identical requests within this window share one upstream round-trip. */
 export const API_CACHE_TTL_MS = 60_000;

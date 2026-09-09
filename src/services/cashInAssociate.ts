@@ -20,6 +20,7 @@ import {
   CIA_REMITTANCE_FETCH_COUNT,
   normalizeTransporterId,
 } from '../config';
+import { ProviderError } from '../errors';
 import {
   addDaysYmd,
   ageingCalendarYmd,
@@ -445,6 +446,8 @@ function buildPendingDrivers(
 
 /**
  * Fetch bank deposits for a portal anchor date (locked — does not extend to today).
+ * Transient Amazon 502/network errors are soft-failed to [] after provider retries
+ * so one bad remittance window does not fail the whole station reconcile.
  */
 async function fetchRemittancesAtAnchor(
   provider: StationDataProvider,
@@ -454,7 +457,20 @@ async function fetchRemittancesAtAnchor(
   auth: AmazonAuthContext,
 ): Promise<RemittanceEntry[]> {
   const range = getBusinessDayRange(anchorYmd, startHourIst);
-  return provider.getRemittances(stationCode, range, auth, { lockPortalEndToRange: true });
+  try {
+    return await provider.getRemittances(stationCode, range, auth, { lockPortalEndToRange: true });
+  } catch (err) {
+    if (
+      err instanceof ProviderError
+      && (err.code === 'PROVIDER_UPSTREAM_ERROR' || err.code === 'PROVIDER_NETWORK_ERROR')
+    ) {
+      console.warn(
+        `CIA remittance soft-fail station=${stationCode} anchor=${anchorYmd}: ${err.message}`,
+      );
+      return [];
+    }
+    throw err;
+  }
 }
 
 /**

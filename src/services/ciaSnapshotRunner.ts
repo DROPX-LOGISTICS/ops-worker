@@ -18,9 +18,11 @@ import { loadWorkforceRosterMap } from './workforceRoster';
 import { getCiaAnalysisWindow, mergeCiaStationPayloads, reconcileCashInAssociate, splitYmdRange } from './cashInAssociate';
 import {
   isCiaFrontendLeaseActive,
+  markCiaRunSilent,
   readCiaFrontendLease,
   readCiaTickerState,
   writeCiaTickerState,
+  clearCiaRunSilent,
 } from './ciaTickerState';
 
 function sleep(ms: number): Promise<void> {
@@ -605,6 +607,10 @@ export async function startCiaSnapshotRun(
   const store = createCiaSnapshotStore(env);
   const window = getCiaAnalysisWindow();
   const forceNew = Boolean(options?.forceNew);
+  // Manual Refresh all must surface progress in the UI; clear the cron silent flag.
+  if (forceNew) {
+    await clearCiaRunSilent(env);
+  }
   const existing = await store.getActiveRunningRun();
   if (existing) {
     const sameDay = existing.asOfDate === window.asOfDate;
@@ -786,17 +792,24 @@ export async function refreshCiaStation(
 
 /**
  * Every-2-hour cron (06:00–20:00 IST): start/resume today's run, then burst as
- * many stations/chunks as fit the wall-time budget. Prefer Ops Pulse
- * full-station continues; fall back to in-worker 7-day chunks.
+ * many stations as fit the wall-time budget via Ops Pulse (same full-station
+ * path as manual refresh). Mark the run silent so the CIA UI does not show
+ * "refresh in progress". Fall back to in-worker 7-day chunks only when Ops
+ * Pulse is not configured.
  */
 export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
   const store = createCiaSnapshotStore(env);
   const { run: started } = await startCiaSnapshotRun(env);
+  await markCiaRunSilent(env, started.id);
   let run = started;
   const burstStartedAt = Date.now();
   let steps = 0;
   let lastStation: string | null = null;
   const total = stationList().length;
+  const opsPulseConfigured = Boolean(
+    String(env.OPS_PULSE_URL ?? '').trim() && String(env.ADMIN_API_KEY ?? '').trim(),
+  );
+  let consecutivePulseMisses = 0;
 
   while (
     steps < CIA_HOURLY_MAX_STEPS
@@ -807,11 +820,12 @@ export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
 
     if (counters.finishedCount >= total && counters.inFlightCount === 0) {
       await finalizeFromSnapshots(env, run.id, total);
+      await clearCiaRunSilent(env);
       break;
     }
 
     // Another caller (open tab / overlapping continue) owns the portal session.
-    // Stop the burst instead of spinning — next hour resumes.
+    // Stop the burst instead of spinning — next kick resumes.
     if (counters.activeProcessingCount >= CIA_MAX_IN_FLIGHT) {
       console.log(`CIA refresh burst ${run.id} pause: station already in flight`);
       break;
@@ -823,13 +837,42 @@ export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
       break;
     }
 
-    const viaPulse = await continueViaOpsPulse(env, run.id);
+    const viaPulse = await continueViaOpsPulse(env, run.id, { retries: 2 });
     if (viaPulse.processedStation) {
+      consecutivePulseMisses = 0;
       steps += 1;
       lastStation = viaPulse.processedStation;
       run = viaPulse.run ?? (await store.getRun(run.id)) ?? run;
-      if (viaPulse.done) break;
+      if (viaPulse.done) {
+        await clearCiaRunSilent(env);
+        break;
+      }
       continue;
+    }
+
+    if (opsPulseConfigured) {
+      // Stick to the fast BFF path. Slow 7-day worker chunks make cron lag
+      // far behind manual refresh and are a common "stuck" source.
+      consecutivePulseMisses += 1;
+      if (
+        consecutivePulseMisses < 3
+        && Date.now() - burstStartedAt < CIA_HOURLY_WALL_MS - 2_000
+      ) {
+        await sleep(800 * consecutivePulseMisses);
+        continue;
+      }
+      console.warn(
+        `CIA cron: Ops Pulse unavailable after ${consecutivePulseMisses} tries; `
+          + 'deferring remaining stations to next kick',
+      );
+      await writeCiaTickerState(env, {
+        outcome: 'skipped',
+        lastRunId: run.id,
+        lastStationCode: lastStation,
+        skipReason: 'Ops Pulse unavailable — deferred remaining stations',
+        done: false,
+      });
+      break;
     }
 
     try {
@@ -838,7 +881,10 @@ export async function ciaDailyCron(env: Env): Promise<CiaSnapshotRun> {
       if (!tick.processedStation) break;
       steps += 1;
       lastStation = tick.processedStation;
-      if (tick.done) break;
+      if (tick.done) {
+        await clearCiaRunSilent(env);
+        break;
+      }
     } catch (err) {
       console.error('CIA refresh burst step failed', err);
       break;
@@ -929,6 +975,7 @@ export async function ciaTickerCron(env: Env): Promise<CiaTickResult> {
 async function continueViaOpsPulse(
   env: Env,
   runId?: string,
+  opts?: { retries?: number },
 ): Promise<{
   handled: boolean;
   processedStation: string | null;
@@ -940,38 +987,58 @@ async function continueViaOpsPulse(
   if (!base || !key) {
     return { handled: false, processedStation: null, done: false, run: null };
   }
-  try {
-    const response = await fetch(`${base}/api/internal/cia-snapshot/continue`, {
-      method: 'POST',
-      headers: {
-        'x-admin-key': key,
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(runId ? { runId } : {}),
-    });
-    const text = await response.text();
-    if (!response.ok) {
-      console.error(`CIA Ops Pulse continue failed (${response.status}): ${text.slice(0, 240)}`);
-      return { handled: false, processedStation: null, done: false, run: null };
-    }
-    let body: Record<string, unknown> = {};
+  const maxAttempts = Math.max(1, (opts?.retries ?? 0) + 1);
+  let lastFail: 'http' | 'network' | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      body = JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      return { handled: true, processedStation: null, done: false, run: null };
+      const response = await fetch(`${base}/api/internal/cia-snapshot/continue`, {
+        method: 'POST',
+        headers: {
+          'x-admin-key': key,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(runId ? { runId } : {}),
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        lastFail = 'http';
+        console.error(
+          `CIA Ops Pulse continue failed (${response.status}) attempt=${attempt}/${maxAttempts}: `
+            + text.slice(0, 240),
+        );
+        if (attempt < maxAttempts) {
+          await sleep(700 * attempt);
+          continue;
+        }
+        return { handled: false, processedStation: null, done: false, run: null };
+      }
+      let body: Record<string, unknown> = {};
+      try {
+        body = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        return { handled: true, processedStation: null, done: false, run: null };
+      }
+      const runRaw = body.run && typeof body.run === 'object' ? (body.run as { id?: string }) : null;
+      const store = createCiaSnapshotStore(env);
+      const run = runRaw?.id ? await store.getRun(String(runRaw.id)) : await store.getActiveRunningRun();
+      return {
+        handled: true,
+        processedStation: body.processedStation == null ? null : String(body.processedStation),
+        done: Boolean(body.done),
+        run,
+      };
+    } catch (err) {
+      lastFail = 'network';
+      console.error(`CIA Ops Pulse continue request failed attempt=${attempt}/${maxAttempts}`, err);
+      if (attempt < maxAttempts) {
+        await sleep(700 * attempt);
+        continue;
+      }
     }
-    const runRaw = body.run && typeof body.run === 'object' ? (body.run as { id?: string }) : null;
-    const store = createCiaSnapshotStore(env);
-    const run = runRaw?.id ? await store.getRun(String(runRaw.id)) : await store.getActiveRunningRun();
-    return {
-      handled: true,
-      processedStation: body.processedStation == null ? null : String(body.processedStation),
-      done: Boolean(body.done),
-      run,
-    };
-  } catch (err) {
-    console.error('CIA Ops Pulse continue request failed', err);
-    return { handled: false, processedStation: null, done: false, run: null };
   }
+
+  console.error(`CIA Ops Pulse continue gave up after ${maxAttempts} attempts (${lastFail ?? 'unknown'})`);
+  return { handled: false, processedStation: null, done: false, run: null };
 }

@@ -17,8 +17,15 @@ export interface CiaFrontendLeaseState {
   touchedAt: string;
 }
 
+/** Cron-driven runs stay off the CIA UI progress banner until finished. */
+export interface CiaSilentRunState {
+  runId: string;
+  markedAt: string;
+}
+
 const CACHE_KEY = 'cia:ticker:state';
 const FRONTEND_LEASE_KEY = 'cia:frontend:lease';
+const SILENT_RUN_KEY = 'cia:silent:run';
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const CIA_FRONTEND_LEASE_MS = 45 * 1000;
 
@@ -72,4 +79,25 @@ export function isCiaFrontendLeaseActive(
   const touchedMs = Date.parse(lease.touchedAt);
   if (!Number.isFinite(touchedMs)) return false;
   return (args?.nowMs ?? Date.now()) - touchedMs < CIA_FRONTEND_LEASE_MS;
+}
+
+export async function markCiaRunSilent(env: Env, runId: string): Promise<void> {
+  const id = runId.trim();
+  if (!id) return;
+  const store = createApiResponseCacheStore(env);
+  const next: CiaSilentRunState = { runId: id, markedAt: new Date().toISOString() };
+  await store.set(SILENT_RUN_KEY, next, CACHE_TTL_MS);
+}
+
+export async function clearCiaRunSilent(env: Env): Promise<void> {
+  const store = createApiResponseCacheStore(env);
+  await store.set(SILENT_RUN_KEY, { runId: '', markedAt: new Date().toISOString() }, CACHE_TTL_MS);
+}
+
+export async function isCiaRunSilent(env: Env, runId: string | null | undefined): Promise<boolean> {
+  const id = String(runId ?? '').trim();
+  if (!id) return false;
+  const store = createApiResponseCacheStore(env);
+  const raw = await store.get<CiaSilentRunState>(SILENT_RUN_KEY);
+  return Boolean(raw?.runId && raw.runId === id);
 }

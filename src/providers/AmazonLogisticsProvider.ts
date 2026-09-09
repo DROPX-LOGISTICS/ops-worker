@@ -157,6 +157,43 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     processName: string,
     requestBody: TReq,
     auth: AmazonAuthContext,
+    options?: { refererPath?: string; httpMethod?: string; maxAttempts?: number },
+  ): Promise<TRes> {
+    const maxAttempts = Math.max(1, options?.maxAttempts ?? 3);
+    let lastError: ProviderError | null = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this.callProxyOnce<TReq, TRes>(
+          resourcePath,
+          processName,
+          requestBody,
+          auth,
+          options,
+        );
+      } catch (err) {
+        if (!(err instanceof ProviderError)) throw err;
+        lastError = err;
+        const retryable =
+          err.code === 'PROVIDER_UPSTREAM_ERROR' || err.code === 'PROVIDER_NETWORK_ERROR';
+        if (!retryable || attempt >= maxAttempts) throw err;
+        const delayMs = 400 * attempt;
+        console.warn(
+          `Amazon proxy retry ${attempt}/${maxAttempts - 1} for ${resourcePath} `
+            + `after ${err.code}: waiting ${delayMs}ms`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+
+    throw lastError ?? new ProviderError(`Amazon proxy failed (${resourcePath})`, 502, 'PROVIDER_UPSTREAM_ERROR');
+  }
+
+  private async callProxyOnce<TReq, TRes>(
+    resourcePath: string,
+    processName: string,
+    requestBody: TReq,
+    auth: AmazonAuthContext,
     options?: { refererPath?: string; httpMethod?: string },
   ): Promise<TRes> {
     const envelope: ProxyEnvelope<TReq> = {

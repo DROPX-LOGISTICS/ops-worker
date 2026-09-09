@@ -27,7 +27,7 @@ import {
   startCiaSnapshotRun,
   touchCiaStationClaim,
 } from '../services/ciaSnapshotRunner';
-import { readCiaTickerState, touchCiaFrontendLease } from '../services/ciaTickerState';
+import { readCiaTickerState, touchCiaFrontendLease, isCiaRunSilent } from '../services/ciaTickerState';
 
 /**
  * An empty table and an absent table both surface as `null` from the store, so
@@ -306,7 +306,7 @@ export async function ciaStationHandler(c: Context<{ Bindings: Env }>) {
 export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
   const shared = createApiResponseCacheStore(c.env);
   const { value, cacheHit } = await cachedJson<CiaReadResult>(
-    'cia:network:v6',
+    'cia:network:v7',
     API_CACHE_TTL_MS,
     async () => {
       const store = createCiaSnapshotStore(c.env);
@@ -337,8 +337,12 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
         ? await store.syncRunCountersFromSnapshots(progress.id)
         : null;
       const backgroundCron = await readCiaTickerState(c.env);
-      const refreshActive = Boolean(progress && progress.status === 'running');
-      // During refresh, show the target report date (yesterday IST) from the
+      // Cron runs are silent: merge finished station snaps into the base view,
+      // but do not expose refreshProgress (UI banner is for manual Refresh all only).
+      const silentProgress = progress ? await isCiaRunSilent(c.env, progress.id) : false;
+      const exposeProgress = Boolean(progress && progress.status === 'running' && !silentProgress);
+      const refreshActive = exposeProgress;
+      // During manual refresh, show the target report date (yesterday IST) from the
       // in-progress run — not the older fullest completed run still backing most rows.
       const displayRun =
         refreshActive && progress!.asOfDate.localeCompare(run.asOfDate) >= 0
@@ -361,7 +365,7 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
             stationsOk,
             stationsFailed,
           },
-          refreshProgress: progress
+          refreshProgress: exposeProgress && progress
             ? {
                 id: progress.id,
                 status: progress.status,
@@ -383,7 +387,8 @@ export async function ciaNetworkHandler(c: Context<{ Bindings: Env }>) {
                 stationsProcessing: progressCounters?.processingCount ?? 0,
               }
             : null,
-          backgroundCron,
+          // Only surface cron ticker meta alongside a visible manual refresh.
+          backgroundCron: exposeProgress ? backgroundCron : null,
           totals,
           stations: snaps.map((s) => ({
             stationCode: s.stationCode,
