@@ -84,9 +84,7 @@ export async function refreshAmazonSession(
       ok: false,
       code: 'LOGIN_IN_PROGRESS',
       accountKey,
-      error:
-        `Another DropX worker is already refreshing the shared Amazon login for account "${accountKey}". `
-        + 'Retry shortly — sessions are shared across cash-recon, Report-auto, and amazon-edd.',
+      error: `Amazon login already in progress for account "${accountKey}".`,
     };
   }
 

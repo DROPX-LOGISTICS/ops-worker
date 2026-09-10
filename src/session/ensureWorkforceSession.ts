@@ -36,19 +36,17 @@ export type EnsureWorkforceSessionResult =
       needsLocalLogin?: boolean;
     };
 
-const SHARED_LOGIN_WAIT_MS = 45_000;
-const SHARED_LOGIN_POLL_MS = 2_000;
+const SHARED_LOGIN_DEADLINE_MS = 120_000;
+const SHARED_LOGIN_POLL_MS = 1_500;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
- * 1. Probe active workforce cookie with fetchDSPAssociates.
- * 2. If another org worker holds the shared login lock, wait for its session.
- * 3. On miss/expiry, Puppeteer-login using WORKFORCE_PORTAL_* env creds.
- *
- * Shares `workforce_sessions` / `workforce_login_state` with Report-auto-worker.
+ * Shared workforce cookie across cash-recon + Report-auto. Concurrent callers
+ * reuse it; only Puppeteer login is single-flight. LOGIN_IN_PROGRESS is never
+ * shown to product UI — wait silently until the shared session is ready.
  */
 export async function ensureValidWorkforceSession(
   env: Env,
@@ -63,6 +61,7 @@ export async function ensureValidWorkforceSession(
   const accountKey = opts.accountKey?.trim() || DEFAULT_PORTAL_ACCOUNT;
   const store = createWorkforceSessionStore(env);
   const provider = createProvider(env);
+  const lockStore = new WorkforceLoginStateStore(env);
 
   if (!opts.forceRefresh) {
     const active = await store.getActive(accountKey);
@@ -81,12 +80,6 @@ export async function ensureValidWorkforceSession(
       }
       await store.markExpired(active.id).catch((e) => console.error('workforce markExpired failed', e));
     }
-
-    const lockState = await new WorkforceLoginStateStore(env).getPublic(accountKey);
-    if (lockState.loginLocked) {
-      const waited = await waitForSharedWorkforceSession(store, provider, accountKey);
-      if (waited) return waited;
-    }
   }
 
   if (!getWorkforcePortalCredentials(env)) {
@@ -100,6 +93,8 @@ export async function ensureValidWorkforceSession(
   }
 
   if (!env.BROWSER) {
+    const adopted = await waitForSharedWorkforceSession(store, provider, lockStore, accountKey, 60_000);
+    if (adopted) return adopted;
     return {
       ok: false,
       code: 'NEEDS_LOCAL_LOGIN',
@@ -111,77 +106,114 @@ export async function ensureValidWorkforceSession(
     };
   }
 
-  const refreshed = await refreshWorkforceSession(env, {
-    triggeredBy: opts.triggeredBy || 'ensure-workforce-session',
-    notifyOnFailure: opts.notifyOnFailure !== false,
-    accountKey,
-  });
-
-  if (!refreshed.ok && refreshed.code === 'LOGIN_IN_PROGRESS') {
-    const waited = await waitForSharedWorkforceSession(store, provider, accountKey);
-    if (waited) return waited;
-    const retry = await refreshWorkforceSession(env, {
-      triggeredBy: opts.triggeredBy || 'ensure-workforce-session-retry',
+  if (opts.forceRefresh) {
+    const refreshed = await refreshWorkforceSession(env, {
+      triggeredBy: opts.triggeredBy || 'ensure-workforce-session',
       notifyOnFailure: opts.notifyOnFailure !== false,
       accountKey,
     });
-    if (!retry.ok) {
+    if (refreshed.ok) {
       return {
-        ok: false,
-        code: retry.code,
+        ok: true,
+        auth: { cookie: refreshed.stored.cookie },
+        sessionId: refreshed.stored.id,
+        source: 'refreshed',
         accountKey,
-        error:
-          retry.code === 'LOGIN_IN_PROGRESS'
-            ? `Another DropX worker is refreshing the shared workforce login for "${accountKey}". Retry shortly.`
-            : retry.error,
       };
     }
-    return {
-      ok: true,
-      auth: { cookie: retry.stored.cookie },
-      sessionId: retry.stored.id,
-      source: 'refreshed',
-      accountKey,
-    };
+    if (refreshed.code !== 'LOGIN_IN_PROGRESS') {
+      return { ok: false, code: refreshed.code, error: refreshed.error, accountKey };
+    }
   }
 
-  if (!refreshed.ok) {
+  const deadline = Date.now() + SHARED_LOGIN_DEADLINE_MS;
+  let notifyOnFailure = opts.notifyOnFailure !== false;
+
+  while (Date.now() < deadline) {
+    const adopted = await tryAdoptWorkforce(store, provider, accountKey);
+    if (adopted) return adopted;
+
+    const lockState = await lockStore.getPublic(accountKey);
+    if (lockState.loginLocked) {
+      await sleep(SHARED_LOGIN_POLL_MS);
+      continue;
+    }
+
+    const refreshed = await refreshWorkforceSession(env, {
+      triggeredBy: opts.triggeredBy || 'ensure-workforce-session',
+      notifyOnFailure,
+      accountKey,
+    });
+    notifyOnFailure = false;
+
+    if (refreshed.ok) {
+      return {
+        ok: true,
+        auth: { cookie: refreshed.stored.cookie },
+        sessionId: refreshed.stored.id,
+        source: 'refreshed',
+        accountKey,
+      };
+    }
+    if (refreshed.code === 'LOGIN_IN_PROGRESS') {
+      await sleep(SHARED_LOGIN_POLL_MS);
+      continue;
+    }
     return { ok: false, code: refreshed.code, error: refreshed.error, accountKey };
   }
 
+  const last = await tryAdoptWorkforce(store, provider, accountKey);
+  if (last) return last;
+
+  return {
+    ok: false,
+    code: 'SESSION_UNAVAILABLE',
+    accountKey,
+    error: 'Workforce session is not ready yet. Please try again in a moment.',
+  };
+}
+
+async function tryAdoptWorkforce(
+  store: ReturnType<typeof createWorkforceSessionStore>,
+  provider: WorkforceProvider,
+  accountKey: string,
+): Promise<EnsureWorkforceSessionResult | null> {
+  const active = await store.getActive(accountKey);
+  if (!active?.cookie) return null;
+  const auth = { cookie: active.cookie };
+  const probe = await probeWorkforce(provider, auth);
+  if (!probe.ok) return null;
   return {
     ok: true,
-    auth: { cookie: refreshed.stored.cookie },
-    sessionId: refreshed.stored.id,
-    source: 'refreshed',
+    auth,
+    sessionId: active.id,
+    source: 'cached',
     accountKey,
+    associateCount: probe.associateCount,
   };
 }
 
 async function waitForSharedWorkforceSession(
   store: ReturnType<typeof createWorkforceSessionStore>,
   provider: WorkforceProvider,
+  lockStore: WorkforceLoginStateStore,
   accountKey: string,
+  maxWaitMs: number,
 ): Promise<EnsureWorkforceSessionResult | null> {
-  const deadline = Date.now() + SHARED_LOGIN_WAIT_MS;
+  if (maxWaitMs <= 0) return null;
+  const deadline = Date.now() + maxWaitMs;
   let first = true;
   while (Date.now() < deadline) {
     if (!first) await sleep(SHARED_LOGIN_POLL_MS);
     first = false;
-    const active = await store.getActive(accountKey);
-    if (!active?.cookie) continue;
-    const auth = { cookie: active.cookie };
-    const probe = await probeWorkforce(provider, auth);
-    if (probe.ok) {
+    const adopted = await tryAdoptWorkforce(store, provider, accountKey);
+    if (adopted) {
       console.log(`ensureValidWorkforceSession: adopted shared session for ${accountKey}`);
-      return {
-        ok: true,
-        auth,
-        sessionId: active.id,
-        source: 'cached',
-        accountKey,
-        associateCount: probe.associateCount,
-      };
+      return adopted;
+    }
+    const lockState = await lockStore.getPublic(accountKey);
+    if (!lockState.loginLocked) {
+      return tryAdoptWorkforce(store, provider, accountKey);
     }
   }
   return null;
@@ -198,7 +230,6 @@ async function probeWorkforce(
     if (err instanceof ProviderError && err.code === 'WORKFORCE_SESSION_EXPIRED') {
       return { ok: false };
     }
-    // Non-auth failure: keep session (avoid login storms on transient Amazon errors).
     console.warn('ensureValidWorkforceSession: probe non-auth error, reusing session', err);
     return { ok: true, associateCount: 0 };
   }
