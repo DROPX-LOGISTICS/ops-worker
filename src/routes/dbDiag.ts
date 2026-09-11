@@ -1,6 +1,7 @@
 import type { Context } from 'hono';
 import { createClient } from '@supabase/supabase-js';
 import type { Env } from '../types';
+import { timeoutFetch } from '../utils/timeoutFetch';
 
 /**
  * Every table this Worker reads or writes, in the same order as
@@ -58,6 +59,7 @@ function isUndefinedTable(code: string, message: string) {
 export async function probeTables(env: Env, tables: readonly string[]): Promise<TableProbe[]> {
   const client = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false },
+    global: { fetch: timeoutFetch() },
   });
 
   return Promise.all(
@@ -138,6 +140,7 @@ export async function dbDiagHandler(c: Context<{ Bindings: Env }>) {
     try {
       const client = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY, {
         auth: { persistSession: false },
+        global: { fetch: timeoutFetch() },
       });
       const { data, error } = await client
         .from('cia_snapshot_runs')

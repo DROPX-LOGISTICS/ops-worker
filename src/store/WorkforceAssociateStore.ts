@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { timeoutFetch } from '../utils/timeoutFetch';
 import { normalizeTransporterId } from '../config';
 import type { WorkforceAssociate } from '../types';
 
@@ -53,7 +54,7 @@ export class WorkforceAssociateStore {
   private readonly client: SupabaseClient;
 
   constructor(url: string, serviceRoleKey: string) {
-    this.client = createClient(url, serviceRoleKey, { auth: { persistSession: false } });
+    this.client = createClient(url, serviceRoleKey, { auth: { persistSession: false }, global: { fetch: timeoutFetch() } });
   }
 
   async listAll(): Promise<WorkforceAssociate[]> {

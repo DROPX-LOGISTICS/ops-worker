@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { timeoutFetch } from '../utils/timeoutFetch';
 import { DEFAULT_PORTAL_ACCOUNT } from '../config';
 import type { CredentialStore } from './CredentialStore';
 import type { StoredCredential } from '../types';
@@ -36,7 +37,7 @@ export class SupabaseCredentialStore implements CredentialStore {
   private readonly client: SupabaseClient;
 
   constructor(url: string, serviceRoleKey: string) {
-    this.client = createClient(url, serviceRoleKey, { auth: { persistSession: false } });
+    this.client = createClient(url, serviceRoleKey, { auth: { persistSession: false }, global: { fetch: timeoutFetch() } });
   }
 
   async getActive(accountKey?: string): Promise<StoredCredential | null> {

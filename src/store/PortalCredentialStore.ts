@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { DEFAULT_PORTAL_ACCOUNT } from '../config';
 import type { Env } from '../types';
+import { timeoutFetch } from '../utils/timeoutFetch';
 
 export interface PortalCredentials {
   accountKey: string;
@@ -103,6 +104,7 @@ export class PortalCredentialStore {
   constructor(private readonly env: Env) {
     this.client = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
       auth: { persistSession: false },
+      global: { fetch: timeoutFetch() },
     });
   }
 

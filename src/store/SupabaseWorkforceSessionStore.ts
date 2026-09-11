@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { timeoutFetch } from '../utils/timeoutFetch';
 import { DEFAULT_PORTAL_ACCOUNT } from '../config';
 import type { WorkforceSessionStore } from './WorkforceSessionStore';
 import type { StoredWorkforceSession } from '../types';
@@ -34,7 +35,7 @@ export class SupabaseWorkforceSessionStore implements WorkforceSessionStore {
   private readonly client: SupabaseClient;
 
   constructor(url: string, serviceRoleKey: string) {
-    this.client = createClient(url, serviceRoleKey, { auth: { persistSession: false } });
+    this.client = createClient(url, serviceRoleKey, { auth: { persistSession: false }, global: { fetch: timeoutFetch() } });
   }
 
   async getActive(accountKey?: string): Promise<StoredWorkforceSession | null> {

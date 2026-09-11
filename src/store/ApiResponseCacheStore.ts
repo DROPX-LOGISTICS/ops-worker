@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { timeoutFetch } from '../utils/timeoutFetch';
 
 interface CacheRow {
   cache_key: string;
@@ -15,7 +16,7 @@ export class ApiResponseCacheStore {
   private tableMissing = false;
 
   constructor(url: string, serviceRoleKey: string) {
-    this.client = createClient(url, serviceRoleKey, { auth: { persistSession: false } });
+    this.client = createClient(url, serviceRoleKey, { auth: { persistSession: false }, global: { fetch: timeoutFetch() } });
   }
 
   async get<T>(key: string): Promise<T | null> {

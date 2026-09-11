@@ -1,9 +1,10 @@
 import type { Context } from 'hono';
 import { createClient } from '@supabase/supabase-js';
 import type { Env } from '../types';
+import { timeoutFetch } from '../utils/timeoutFetch';
 
 function client(env: Env) {
-  return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
+  return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false }, global: { fetch: timeoutFetch() } });
 }
 
 export async function listNotificationsHandler(c: Context<{ Bindings: Env }>) {

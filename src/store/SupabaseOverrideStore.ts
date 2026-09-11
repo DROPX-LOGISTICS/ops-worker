@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { OverrideStore, ValidationRunRecord, OverrideRecord } from './OverrideStore';
+import { timeoutFetch } from '../utils/timeoutFetch';
 
 export class SupabaseOverrideStore implements OverrideStore {
   private readonly client: SupabaseClient;
@@ -9,6 +10,7 @@ export class SupabaseOverrideStore implements OverrideStore {
     // Worker, never in a browser, and must bypass RLS to write audit rows.
     this.client = createClient(url, serviceRoleKey, {
       auth: { persistSession: false },
+      global: { fetch: timeoutFetch() },
     });
   }
 
