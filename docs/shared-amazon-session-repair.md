@@ -16,6 +16,9 @@ ops-worker/supabase/migrations/20260912103341_shared_amazon_session_protocol.sql
   if a platform/browser operation fails to stop. Upstream HTTP has a 60-second
   timeout, and Supabase requests/body reads a 20-second timeout.
 - Existing station scoping, credentials, secrets, status classification and schedules remain.
+- Login probes require two consecutive authentication failures before expiring
+  the shared session. Network/quota errors remain inconclusive, and diagnostics
+  record only failure categories, never cookies, keys or response bodies.
 
 ## Verification
 Run `pnpm typecheck`, `node scripts/test-amazon-session-client.mjs`,

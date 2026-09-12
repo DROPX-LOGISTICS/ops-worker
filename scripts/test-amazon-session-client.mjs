@@ -73,4 +73,28 @@ await check('database lookup outage fails closed, not as missing session',async(
   clients.push({from:()=>chain});const portal=new PortalCredentialStore({});
   await assert.rejects(portal.getForLogin('default'),/lookup unavailable/);
 });
+
+const {validateSessionProbe}=load('src/session/validateSessionProbe.ts');
+const {ProviderError}=load('src/errors.ts');
+await check('one transient authentication response does not invalidate shared login',async()=>{
+  let calls=0;
+  assert.equal(await validateSessionProbe(async()=>{if(++calls===1)throw new ProviderError('HTML challenge',401,'AMAZON_SESSION_EXPIRED');}),true);
+  assert.equal(calls,2);
+});
+await check('two confirmed auth failures invalidate the session',async()=>{
+  let calls=0;
+  assert.equal(await validateSessionProbe(async()=>{calls++;throw new ProviderError('404',404,'AMAZON_SESSION_EXPIRED');}),false);
+  assert.equal(calls,2);
+});
+await check('network or quota errors are not proof of session expiry',async()=>{
+  for(const code of ['PROVIDER_NETWORK_ERROR','PROVIDER_UPSTREAM_ERROR']){
+    let calls=0;
+    assert.equal(await validateSessionProbe(async()=>{calls++;throw new ProviderError('private response omitted',502,code);}),true);
+    assert.equal(calls,1);
+  }
+  let calls=0;
+  assert.equal(await validateSessionProbe(async()=>{throw ++calls===1
+    ? new ProviderError('401',401,'AMAZON_SESSION_EXPIRED')
+    : new ProviderError('network',502,'PROVIDER_NETWORK_ERROR');}),true);
+});
 console.log(`${checks} isolated client checks passed.`);

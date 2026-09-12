@@ -3,7 +3,7 @@ import { portalAccountKeyForStation, isDedicatedPortalStation } from '../config'
 import { createCredentialStore } from '../store/factory';
 import { PortalCredentialStore } from '../store/PortalCredentialStore';
 import { AmazonLogisticsProvider } from '../providers/AmazonLogisticsProvider';
-import { ProviderError } from '../errors';
+import { validateSessionProbe } from './validateSessionProbe';
 import { refreshAmazonSession, type RefreshSessionResult } from './refreshSession';
 import { scrapeStationCode } from './scrapeStation';
 
@@ -270,16 +270,7 @@ async function probeSession(
   scrapeStation: string,
   auth: AmazonAuthContext,
 ): Promise<boolean> {
-  try {
-    await provider.getActiveDrivers(scrapeStation, auth);
-    return true;
-  } catch (err) {
-    if (err instanceof ProviderError && err.code === 'AMAZON_SESSION_EXPIRED') {
-      return false;
-    }
-    console.warn('ensureValidAmazonSession: probe non-auth error, reusing session', err);
-    return true;
-  }
+  return validateSessionProbe(() => provider.getActiveDrivers(scrapeStation, auth));
 }
 
 export type { StoredCredential };
