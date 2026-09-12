@@ -16,6 +16,7 @@ export interface CredentialStore {
     xApiUsageKey: string,
     uploadedBy: string,
     accountKey?: string,
+    loginLeaseToken?: string,
   ): Promise<StoredCredential>;
   /** Marks a session (defaults to active for the account) as expired. */
   markExpired(id?: string, accountKey?: string): Promise<void>;

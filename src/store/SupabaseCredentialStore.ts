@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { timeoutFetch } from '../utils/timeoutFetch';
+import { amazonSessionRpc } from '../session/amazonSessionProtocol';
 import { DEFAULT_PORTAL_ACCOUNT } from '../config';
 import type { CredentialStore } from './CredentialStore';
 import type { StoredCredential } from '../types';
@@ -57,8 +58,8 @@ export class SupabaseCredentialStore implements CredentialStore {
       if (key === DEFAULT_PORTAL_ACCOUNT && this.isMissingAccountKey(error)) {
         return this.getActiveLegacy();
       }
-      console.error('SupabaseCredentialStore.getActive failed', error);
-      return null;
+      // A database outage is not evidence of a missing Amazon session.
+      throw new Error('Amazon active-session lookup unavailable.');
     }
     return data ? toStoredCredential(data as SessionRow) : null;
   }
@@ -85,82 +86,35 @@ export class SupabaseCredentialStore implements CredentialStore {
   }
 
   async upload(
-    cookie: string,
-    xApiUsageKey: string,
-    uploadedBy: string,
-    accountKey?: string,
+    cookie: string, xApiUsageKey: string, uploadedBy: string,
+    accountKey?: string, loginLeaseToken?: string,
   ): Promise<StoredCredential> {
-    const key = normalizeAccountKey(accountKey);
-
-    // Only supersede active sessions for this account.
-    let supersede = this.client
-      .from('amazon_sessions')
-      .update({ status: 'expired', expired_at: new Date().toISOString() })
-      .eq('status', 'active');
-    supersede = this.withAccountFilter(supersede, key);
-    const { error: supersedeError } = await supersede;
-    if (supersedeError && !this.isMissingAccountKey(supersedeError)) {
-      console.error('SupabaseCredentialStore.upload: failed to supersede previous session', supersedeError);
-    } else if (supersedeError && key === DEFAULT_PORTAL_ACCOUNT) {
-      await this.client
-        .from('amazon_sessions')
-        .update({ status: 'expired', expired_at: new Date().toISOString() })
-        .eq('status', 'active');
-    }
-
-    const insertPayload: Record<string, unknown> = {
-      cookie,
-      x_api_usage_key: xApiUsageKey,
-      uploaded_by: uploadedBy,
-      status: 'active',
-      account_key: key,
-    };
-
-    let { data, error } = await this.client
-      .from('amazon_sessions')
-      .insert(insertPayload)
-      .select('*')
-      .single();
-
-    // Pre-migration: retry without account_key for default account only.
-    if (error && this.isMissingAccountKey(error) && key === DEFAULT_PORTAL_ACCOUNT) {
-      const retry = await this.client
-        .from('amazon_sessions')
-        .insert({
-          cookie,
-          x_api_usage_key: xApiUsageKey,
-          uploaded_by: uploadedBy,
-          status: 'active',
-        })
-        .select('*')
-        .single();
-      data = retry.data;
-      error = retry.error;
-    }
-
-    if (error || !data) {
-      throw new Error(`Failed to store uploaded Amazon session (${key}): ${error?.message ?? 'unknown error'}`);
-    }
-    return toStoredCredential(data as SessionRow);
+    const data = await amazonSessionRpc(this.client, 'amazon_replace_session_v1', {
+      p_account_key: normalizeAccountKey(accountKey), p_session_id: crypto.randomUUID(),
+      p_cookie: cookie, p_api_key: xApiUsageKey, p_uploaded_by: uploadedBy,
+      p_token: loginLeaseToken ?? null,
+    });
+    const row = Array.isArray(data) ? data[0] : null;
+    if (!row || row.status !== 'active') throw new Error('Amazon session replacement was not confirmed.');
+    return toStoredCredential(row as SessionRow);
   }
 
   async markExpired(id?: string, accountKey?: string): Promise<void> {
-    const key = normalizeAccountKey(accountKey);
-    let query = this.client
-      .from('amazon_sessions')
-      .update({ status: 'expired', expired_at: new Date().toISOString() })
-      .eq('status', 'active');
-
-    if (id) {
-      query = query.eq('id', id);
-    } else {
-      query = this.withAccountFilter(query, key);
+    // Existing callers may supply a dedicated account's session ID alone.
+    let key = accountKey;
+    if (id && !key) {
+      const { data, error } = await this.client.from('amazon_sessions')
+        .select('account_key').eq('id', id).maybeSingle();
+      if (error) throw new Error('Amazon session identity lookup unavailable.');
+      if (!data) return;
+      key = data.account_key;
     }
-
-    const { error } = await query;
-    if (error) {
-      console.error('SupabaseCredentialStore.markExpired failed', error);
-    }
+    key = normalizeAccountKey(key);
+    const target = id ?? (await this.getActive(key))?.id;
+    if (!target) return;
+    await amazonSessionRpc(this.client, 'amazon_expire_session_v1', {
+      p_account_key: key, p_session_id: target,
+    });
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -182,8 +136,7 @@ export class SupabaseCredentialStore implements CredentialStore {
       .limit(1)
       .maybeSingle();
     if (error) {
-      console.error('SupabaseCredentialStore.getActiveLegacy failed', error);
-      return null;
+      throw new Error('Amazon active-session lookup unavailable.');
     }
     return data ? toStoredCredential(data as SessionRow) : null;
   }

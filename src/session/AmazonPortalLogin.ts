@@ -1,5 +1,6 @@
 import puppeteer, { type Browser, type Page, type HTTPRequest } from '@cloudflare/puppeteer';
 import type { Env, AmazonAuthContext } from '../types';
+import { AMAZON_BROWSER_LOGIN_TIMEOUT_MS } from './amazonSessionProtocol';
 
 const BASE = 'https://www.amazonlogistics.eu';
 const CASH_OVERVIEW_PATH = '/station/dashboard/cashoverview';
@@ -37,8 +38,14 @@ export async function loginAndCaptureSession(env: Env, input: PortalLoginInput):
   }
 
   let browser: Browser | null = null;
+  let deadlineReached = false;
+  const deadlineTimer = setTimeout(() => {
+    deadlineReached = true;
+    void browser?.close().catch(() => undefined);
+  }, AMAZON_BROWSER_LOGIN_TIMEOUT_MS);
   try {
     browser = await puppeteer.launch(env.BROWSER);
+    if (deadlineReached) throw new Error('Amazon browser login exceeded its time budget.');
     const page = await browser.newPage();
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
@@ -81,6 +88,7 @@ export async function loginAndCaptureSession(env: Env, input: PortalLoginInput):
       error: `Browser automation failed: ${(err as Error).message}`,
     };
   } finally {
+    clearTimeout(deadlineTimer);
     if (browser) {
       try {
         await browser.close();

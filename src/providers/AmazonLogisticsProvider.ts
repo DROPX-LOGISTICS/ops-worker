@@ -226,6 +226,8 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       // "<!doctype is not valid JSON" failure even with a fresh cookie.
       res = await fetch(proxyUrl, {
         method: 'POST',
+        // Includes response-body reads: one hung Amazon call must not occupy a lane forever.
+        signal: AbortSignal.timeout(60_000),
         redirect: 'manual',
         headers: {
           'content-type': 'application/json',

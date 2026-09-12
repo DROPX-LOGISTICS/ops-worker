@@ -5,6 +5,7 @@ import { PortalCredentialStore } from '../store/PortalCredentialStore';
 import { createNotifier } from '../notifications/factory';
 import { loginAndCaptureSession } from './AmazonPortalLogin';
 import { scrapeStationCode } from './scrapeStation';
+import { AMAZON_LOGIN_LEASE_SECONDS } from './amazonSessionProtocol';
 
 export type RefreshSessionResult =
   | { ok: true; stored: StoredCredential; source: 'puppeteer'; accountKey: string }
@@ -65,7 +66,7 @@ export async function refreshAmazonSession(
     };
   }
 
-  const locked = await portalStore.tryAcquireLoginLock(accountKey, 150);
+  const locked = await portalStore.tryAcquireLoginLock(accountKey, AMAZON_LOGIN_LEASE_SECONDS);
   if (!locked) {
     // The lock is also used as a quota cooldown, so report which one it is —
     // "login in progress" would send operators looking for a stuck browser.
@@ -108,7 +109,9 @@ export async function refreshAmazonSession(
       return { ok: false, code: result.code, error: result.error, accountKey };
     }
 
-    const stored = await persistAuth(env, result.auth, triggeredBy, accountKey);
+    const leaseToken = portalStore.getLoginLeaseToken(accountKey);
+    if (!leaseToken) throw new Error('Amazon login lease was lost.');
+    const stored = await persistAuth(env, result.auth, triggeredBy, accountKey, leaseToken);
     await portalStore.releaseLoginLock({ ok: true }, accountKey);
     return { ok: true, stored, source: 'puppeteer', accountKey };
   } catch (err) {
@@ -152,9 +155,10 @@ async function persistAuth(
   auth: AmazonAuthContext,
   uploadedBy: string,
   accountKey: string,
+  loginLeaseToken: string,
 ): Promise<StoredCredential> {
   const store = createCredentialStore(env);
-  return store.upload(auth.cookie, auth.xApiUsageKey, uploadedBy, accountKey);
+  return store.upload(auth.cookie, auth.xApiUsageKey, uploadedBy, accountKey, loginLeaseToken);
 }
 
 async function notifyLoginFailure(
