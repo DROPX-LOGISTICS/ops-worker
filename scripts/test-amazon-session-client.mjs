@@ -62,6 +62,7 @@ await check('failed claim cannot release another process lock',async()=>{
 await check('quota and authentication challenges back off centrally',async()=>{
   assert.equal(protocol.loginFailureCooldown('429 rate limit exceeded'),900);
   assert.equal(protocol.loginFailureCooldown('MFA required'),900);
+  assert.equal(protocol.loginFailureCooldown('Amazon rejected the login: Account Closed'),900);
   assert.equal(protocol.loginFailureCooldown('network failed'),60);
   assert.ok(protocol.AMAZON_BROWSER_LOGIN_TIMEOUT_MS<protocol.AMAZON_LOGIN_LEASE_SECONDS*1000);
 });

@@ -31,6 +31,6 @@ export async function amazonSessionRpc(
 export const AMAZON_LOGIN_LEASE_SECONDS = 300;
 export const AMAZON_BROWSER_LOGIN_TIMEOUT_MS = 150_000;
 export function loginFailureCooldown(message: string): number {
-  if (/rate limit exceeded|429|too many requests|browser time|MFA|OTP|captcha/i.test(message)) return 900;
+  if (/rate limit exceeded|429|too many requests|browser time|MFA|OTP|captcha|account (?:has been )?(?:closed|locked)/i.test(message)) return 900;
   return 60;
 }
