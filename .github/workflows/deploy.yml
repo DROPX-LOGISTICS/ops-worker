@@ -20,7 +20,6 @@ jobs:
       - run: npm ci
 
       - run: npm run typecheck
-      - run: node --experimental-strip-types --test src/onboarding/observations.test.mjs
 
       # Wrangler prefers account_id in wrangler.toml over CLOUDFLARE_ACCOUNT_ID.
       # Sync toml from the repo secret so CI always targets the intended account.
@@ -60,10 +59,3 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy --env=""
-
-      - name: Deploy dedicated Amazon onboarding scheduler
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy -c wrangler.onboarding.toml
