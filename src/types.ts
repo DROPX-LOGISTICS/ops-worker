@@ -2,6 +2,8 @@
 // Cloudflare bindings (env vars + secrets)
 // ---------------------------------------------------------------------------
 export interface Env {
+  /** Internal tenant bound to this DSP's onboarding integration; not request-controlled. */
+  ONBOARDING_DROPX_COMPANY_ID?: string;
   AMAZON_PROXY_BASE_URL: string;
   BUSINESS_DAY_START_HOUR_IST: string;
   DATA_PROVIDER: string;

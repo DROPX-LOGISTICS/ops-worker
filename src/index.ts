@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+export { AmazonOnboardingSource } from './onboarding/service';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
 import { validateHandler } from './routes/validate';

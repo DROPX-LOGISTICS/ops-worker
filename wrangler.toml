@@ -17,6 +17,7 @@ browser = { binding = "BROWSER" }
 
 # Production / Default environment variables
 [vars]
+ONBOARDING_DROPX_COMPANY_ID = "43866344-b550-4e8a-9a2d-9d23f3d8a997"
 AMAZON_PROXY_BASE_URL = "https://www.amazonlogistics.eu"
 BUSINESS_DAY_START_HOUR_IST = "5"
 DATA_PROVIDER = "amazon"

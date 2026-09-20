@@ -1,0 +1,16 @@
+name = "amazon-onboarding-worker"
+main = "src/onboarding/worker.ts"
+compatibility_date = "2024-09-25"
+compatibility_flags = ["nodejs_compat"]
+account_id = "ab2dba58727809ae8bf0a21edb5fe7b8"
+
+[[services]]
+binding = "ONBOARDING_SOURCE"
+service = "cash-recon-worker"
+entrypoint = "AmazonOnboardingSource"
+
+[triggers]
+crons = ["7,37 * * * *"]
+
+[observability]
+enabled = true
