@@ -2,7 +2,7 @@
 
 Dedicated `amazon-onboarding-worker` scheduler calls the named `AmazonOnboardingSource` RPC entrypoint through a Cloudflare service binding. No public sync endpoint, keys copied to the new Worker, or new browser subscription. Existing SCC/EDD cron expressions and authentication paths are untouched.
 
-Deploy the Workforce `20260920200119_workforce_amazon_observations.sql` migration first, through its GitHub migration workflow. Deploy this repository's primary worker (adds the named entrypoint), then `wrangler.onboarding.toml`. CI performs both Git-sourced releases. The account is the same existing DropX Cloudflare account.
+Deploy the Workforce `20260920200119_workforce_amazon_observations.sql` migration first, through its GitHub migration workflow. The existing GitHub workflow deploys the primary worker (adds the named entrypoint). After that workflow succeeds, deploy the committed scheduler source with `pnpm exec wrangler deploy -c wrangler.onboarding.toml`. The scheduler has a separate release step; adding it to CI requires GitHub workflow-write permission, which the current Git connection does not have. The account is the same existing DropX Cloudflare account.
 
 ## Owner setup
 
