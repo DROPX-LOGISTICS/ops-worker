@@ -4,9 +4,9 @@
  */
 export const ALLOWED_STATIONS: ReadonlySet<string> = new Set([
   'KGQA', 'KGQC', 'TLPA', 'TLPB', 'PEUA', 'KGQE', 'QLDA', 'KOZA', 'KLZH', 'KLZA',
-  'KTUB', 'KTUR', 'ERSE', 'GDRD', 'XAPH', 'GNTF', 'GNTI', 'XAPL', 'GYMC',
+  'KTUB', 'KTUR', 'GDRD', 'XAPH', 'GNTF', 'GNTI', 'XAPL', 'GYMC',
   'XAPI', 'NLRC', 'NLRE', 'NLRF', 'TIRC', 'JDBD', 'JGBA', 'RPRN', 'JUGD', 'SPBE',
-  'JUGF', 'KANA', 'KDJE', 'KDJG', 'SBPD', 'JUGE', 'KTUO', 'HBSC', 'AWEZ',
+  'JUGF', 'KANA', 'KDJE', 'KDJG', 'KTUO', 'HBSC',
 ]);
 
 /** Default portal login account (shared across most stations). */
@@ -19,7 +19,6 @@ export const DEFAULT_PORTAL_ACCOUNT = 'default';
 export const STATION_PORTAL_ACCOUNT: Readonly<Record<string, string>> = {
   KDJG: 'KDJG',
   JUGF: 'JUGF',
-  AWEZ: 'AWEZ',
   KGQE: 'KGQE',
   HBSC: 'HBSC',
 };

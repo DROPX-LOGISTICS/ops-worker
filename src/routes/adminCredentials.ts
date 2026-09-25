@@ -11,7 +11,7 @@ import {
 interface UpsertCredentialsBody {
   email: string;
   password: string;
-  /** Portal account key. Use station code for dedicated accounts (KDJG, JUGF, AWEZ, KGQE, HBSC). */
+  /** Portal account key. Use station code for dedicated accounts (KDJG, JUGF, KGQE, HBSC). */
   accountKey?: string;
   /** Station used during login scrape. Defaults to accountKey for dedicated accounts. */
   defaultStationCode?: string;
