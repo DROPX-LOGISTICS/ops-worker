@@ -56,8 +56,9 @@ export const AMAZON_RESOURCES = {
    * The bank-deposits UI itself reads `/v1/getRemittance` (`tmSystem`) — its
    * CREATED→SUBMITTED status/code transitions land here first. The legacy
    * `cod` process (richer remittanceId / stationVariance) has been observed
-   * lagging v1 by hours for the same record, so v1 is primary with legacy as
-   * a fallback (see AmazonLogisticsProvider.getRemittances).
+   * lagging v1 by hours for the same record. Both are read and merged by
+   * default; CIA reads v1 with legacy as a fallback (see
+   * AmazonLogisticsProvider.getRemittances and utils/remittanceMerge.ts).
    */
   getRemittance: {
     resourcePath: '/v1/getRemittance',

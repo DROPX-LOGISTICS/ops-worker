@@ -58,12 +58,17 @@ export interface StationDataProvider {
    * by default the provider fetches a portal lookback ending at max(range end, today).
    * Pass `lockPortalEndToRange: true` to end the portal window at the range end
    * date only (needed for historical multi-chunk CIA coverage).
+   *
+   * `sources`: 'both' (default) reads v1 and legacy in parallel and merges them,
+   * so a record visible in either counts once and one endpoint failing still
+   * returns the other. 'primaryWithFallback' makes one call (v1, legacy only if
+   * v1 errors or is empty) for subrequest-budget-sensitive callers (CIA).
    */
   getRemittances(
     stationCode: string,
     range: DateRange,
     auth: AmazonAuthContext,
-    opts?: { lockPortalEndToRange?: boolean },
+    opts?: { lockPortalEndToRange?: boolean; sources?: 'both' | 'primaryWithFallback' },
   ): Promise<RemittanceEntry[]>;
 
   /** Shipment-level remittance details for pending trackingId diff. */

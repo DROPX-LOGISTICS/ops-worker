@@ -458,7 +458,11 @@ async function fetchRemittancesAtAnchor(
 ): Promise<RemittanceEntry[]> {
   const range = getBusinessDayRange(anchorYmd, startHourIst);
   try {
-    return await provider.getRemittances(stationCode, range, auth, { lockPortalEndToRange: true });
+    // One remittance call per window (v1, legacy only on failure/empty) rather than
+    // both endpoints: CIA already spends 3 list fetches + up to
+    // CIA_REMITTANCE_DETAILS_MAX detail calls + ageing pages per station within the
+    // Worker subrequest limit.
+    return await provider.getRemittances(stationCode, range, auth, { lockPortalEndToRange: true, sources: 'primaryWithFallback' });
   } catch (err) {
     if (
       err instanceof ProviderError

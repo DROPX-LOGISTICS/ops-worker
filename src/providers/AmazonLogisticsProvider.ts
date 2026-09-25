@@ -23,6 +23,7 @@ import {
 import { ProviderError } from '../errors';
 import { ALLOWED_STATIONS, AMAZON_RESOURCES } from '../config';
 import { round2 } from '../utils/number';
+import { mergeRemittanceSources } from '../utils/remittanceMerge';
 
 interface ProxyEnvelope<TReq> {
   resourcePath: string;
@@ -547,7 +548,7 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     stationCode: string,
     range: DateRange,
     auth: AmazonAuthContext,
-    opts?: { lockPortalEndToRange?: boolean },
+    opts?: { lockPortalEndToRange?: boolean; sources?: 'both' | 'primaryWithFallback' },
   ): Promise<RemittanceEntry[]> {
     const anchorYmd = ymdFromIstEpochMs(range.endTime);
     // Default: end at max(request, today) so next-day deposits stay visible.
@@ -556,36 +557,56 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       ? getRemittanceFetchRange(anchorYmd)
       : getRemittancePortalFetchRange(anchorYmd, todayIstYmd());
 
-    // v1 (`tmSystem`) is what the bank-deposits UI itself reads and is the
-    // first to show a CREATED→SUBMITTED transition; legacy `cod` has been
-    // observed lagging it by hours for the same record. Fall back to legacy
-    // only if v1 errors or comes back empty (e.g. before it existed for an
-    // account/region).
-    try {
+    // v1 (`tmSystem`) is what the bank-deposits UI itself reads; legacy `cod`
+    // carries the same records but they can disagree for hours (either one can
+    // lag). See utils/remittanceMerge.ts for how the two copies are paired.
+    const fetchV1 = async () => {
       const primary = AMAZON_RESOURCES.getRemittance;
-      const data = await this.callProxy<{ stationCode: string; dateRange: DateRange }, RemittanceResponse>(
+      const data = await this.callProxy<{ stationCode: string; dateRange: DateRange }, unknown>(
         primary.resourcePath,
         primary.processName,
         { stationCode, dateRange: fetchRange },
         auth,
         { refererPath: '/station/dashboard/bankdeposits' },
       );
-      const rows = remittanceRows(data);
-      if (rows.length) return rows.map(normaliseRemittance);
-      console.warn(`getRemittances: v1 returned no rows for ${stationCode}; using legacy`);
-    } catch (err) {
-      console.warn(`getRemittances: v1 fetch failed for ${stationCode}, falling back to legacy`, err);
+      return remittanceRows(data).map(normaliseRemittance);
+    };
+    const fetchLegacy = async () => {
+      const legacy = AMAZON_RESOURCES.getRemittanceLegacy;
+      const data = await this.callProxy<{ stationCode: string; dateRange: DateRange }, RemittanceResponse>(
+        legacy.resourcePath,
+        legacy.processName,
+        { stationCode, dateRange: fetchRange },
+        auth,
+        { refererPath: '/station/dashboard/bankdeposits' },
+      );
+      return remittanceRows(data).map(normaliseRemittance);
+    };
+
+    if (opts?.sources === 'primaryWithFallback') {
+      // One call for subrequest-budget-sensitive callers (CIA): v1, and legacy
+      // only if v1 errors or comes back empty.
+      try {
+        const rows = await fetchV1();
+        if (rows.length) return rows;
+        console.warn(`getRemittances: v1 returned no rows for ${stationCode}; using legacy`);
+      } catch (err) {
+        console.warn(`getRemittances: v1 fetch failed for ${stationCode}, falling back to legacy`, err);
+      }
+      return fetchLegacy();
     }
 
-    const legacy = AMAZON_RESOURCES.getRemittanceLegacy;
-    const data = await this.callProxy<{ stationCode: string; dateRange: DateRange }, RemittanceResponse>(
-      legacy.resourcePath,
-      legacy.processName,
-      { stationCode, dateRange: fetchRange },
-      auth,
-      { refererPath: '/station/dashboard/bankdeposits' },
+    // Default: read both and merge, so a record visible in either endpoint is
+    // found (and counted once), and one endpoint failing still returns the
+    // other's rows. Only when both fail does this throw.
+    const [v1, legacy] = await Promise.allSettled([fetchV1(), fetchLegacy()]);
+    if (v1.status === 'rejected' && legacy.status === 'rejected') throw legacy.reason;
+    if (v1.status === 'rejected') console.warn(`getRemittances: v1 fetch failed for ${stationCode}; using legacy only`, v1.reason);
+    if (legacy.status === 'rejected') console.warn(`getRemittances: legacy fetch failed for ${stationCode}; using v1 only`, legacy.reason);
+    return mergeRemittanceSources(
+      v1.status === 'fulfilled' ? v1.value : [],
+      legacy.status === 'fulfilled' ? legacy.value : [],
     );
-    return (data.remittanceList ?? []).map(normaliseRemittance);
   }
 
   async getRemittanceDetailsForExcel(
