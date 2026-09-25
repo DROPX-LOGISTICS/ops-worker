@@ -90,8 +90,8 @@ export const CASH_TID_SNAPSHOT_CUTOFF_HOUR_IST = 23;
 /** Max tracking IDs per /os/batchGetPackageSummary call (traffic showed ~11 in one batch; stay well under any cap). */
 export const CASH_TID_BATCH_CHUNK_SIZE = 25;
 
-/** Snapshot rows older than this are purged regardless of resolution status. */
-export const CASH_TID_SNAPSHOT_RETENTION_DAYS = 30;
+/** Snapshot rows whose business date is older than this many days are purged nightly. */
+export const CASH_TID_SNAPSHOT_RETENTION_DAYS = 40;
 
 /** Prior calendar days for Cash In Associate snapshots (excludes today). */
 export const CIA_LOOKBACK_DAYS = 31;
