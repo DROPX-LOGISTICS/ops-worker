@@ -29,14 +29,26 @@ function toRow(row: SnapshotRow): CashTidSnapshotRow {
 export type NewCashTid = {
   trackingId: string;
   capturedState: string | null;
+  /** Ageing units (paise), same as AgeingPackageDetail.receivableAmount. */
   expectedAmount: number;
   driverId: string | null;
 };
 
+/** Keeps `.in(...)` filters well under PostgREST's URL length limit. */
+const IN_FILTER_CHUNK = 200;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
 /**
- * Nightly snapshot of tracking IDs still CASH_AT_STATION at each station. A TID keeps its
- * original businessDate/firstCapturedAt across re-captures (see upsertOpenTids) so a late
- * cash handover still attributes back to the day the shipment was actually delivered.
+ * Per-station ledger of which business date each cash tracking ID belongs to. A TID is
+ * anchored to the first date it was seen on and never re-dated, so a late cash handover
+ * (which moves lastUpdatedTime to the next day) still attributes back to the delivery
+ * day. Rows are kept (not deleted on resolution) until retention so past dates can be
+ * re-opened against the same ledger.
  */
 export class CashTidSnapshotStore {
   private readonly client: SupabaseClient;
@@ -46,30 +58,20 @@ export class CashTidSnapshotStore {
   }
 
   /**
-   * Insert newly-seen tracking IDs with `businessDate` as their anchor date; refresh
-   * captured_state/last_checked_at on ones already tracked, WITHOUT touching their
-   * existing business_date or first_captured_at (that would be exactly the bug this
-   * table exists to avoid — re-dating a TID to the night it happened to still be open).
+   * Insert-if-absent: anchor newly-seen TIDs to `businessDate`. TIDs already anchored
+   * (to this or any other date) are left untouched — re-dating one to the day it happens
+   * to still be open is exactly the bug this table exists to avoid.
    */
-  async upsertOpenTids(stationCode: string, businessDate: string, tids: NewCashTid[]): Promise<void> {
-    if (tids.length === 0) return;
+  async anchorTids(stationCode: string, businessDate: string, tids: NewCashTid[]): Promise<number> {
     const code = stationCode.trim().toUpperCase();
+    const unique = [...new Map(tids.filter((t) => t.trackingId).map((t) => [t.trackingId, t])).values()];
+    if (unique.length === 0) return 0;
     const now = new Date().toISOString();
 
-    const existing = await this.client
-      .from('cod_cash_tid_snapshots')
-      .select('tracking_id')
-      .eq('station_code', code)
-      .in('tracking_id', tids.map((t) => t.trackingId));
-    if (existing.error) throw new Error(`CashTidSnapshotStore.upsertOpenTids select failed: ${existing.error.message}`);
-    const alreadyTracked = new Set((existing.data ?? []).map((r) => r.tracking_id as string));
-
-    const toInsert = tids.filter((t) => !alreadyTracked.has(t.trackingId));
-    const toRefresh = tids.filter((t) => alreadyTracked.has(t.trackingId));
-
-    if (toInsert.length > 0) {
-      const insertResult = await this.client.from('cod_cash_tid_snapshots').insert(
-        toInsert.map((t) => ({
+    let inserted = 0;
+    for (const batch of chunk(unique, IN_FILTER_CHUNK)) {
+      const { error, count } = await this.client.from('cod_cash_tid_snapshots').upsert(
+        batch.map((t) => ({
           station_code: code,
           tracking_id: t.trackingId,
           business_date: businessDate,
@@ -81,90 +83,82 @@ export class CashTidSnapshotStore {
           created_at: now,
           updated_at: now,
         })),
+        { onConflict: 'station_code,tracking_id', ignoreDuplicates: true, count: 'exact' },
       );
-      if (insertResult.error) {
-        throw new Error(`CashTidSnapshotStore.upsertOpenTids insert failed: ${insertResult.error.message}`);
-      }
+      if (error) throw new Error(`CashTidSnapshotStore.anchorTids failed: ${error.message}`);
+      inserted += count ?? 0;
     }
-
-    // Supabase-js has no batched "update N rows with different values" — refresh
-    // one at a time. Snapshot sizes per station are small (nightly CASH_AT_STATION
-    // backlog), so this is a handful of calls, not thousands.
-    for (const t of toRefresh) {
-      const updateResult = await this.client
-        .from('cod_cash_tid_snapshots')
-        .update({
-          captured_state: t.capturedState,
-          expected_amount: t.expectedAmount,
-          driver_id: t.driverId,
-          last_checked_at: now,
-          updated_at: now,
-        })
-        .eq('station_code', code)
-        .eq('tracking_id', t.trackingId);
-      if (updateResult.error) {
-        throw new Error(`CashTidSnapshotStore.upsertOpenTids refresh failed: ${updateResult.error.message}`);
-      }
-    }
-  }
-
-  async listOpenTids(stationCode: string): Promise<CashTidSnapshotRow[]> {
-    const { data, error } = await this.client
-      .from('cod_cash_tid_snapshots')
-      .select('*')
-      .eq('station_code', stationCode.trim().toUpperCase());
-    if (error) throw new Error(`CashTidSnapshotStore.listOpenTids failed: ${error.message}`);
-    return (data ?? []).map((row) => toRow(row as SnapshotRow));
+    return inserted;
   }
 
   /** Tracking IDs anchored to a specific business date (for merging into that date's reconciliation). */
-  async listOpenTidsForDate(stationCode: string, businessDate: string): Promise<CashTidSnapshotRow[]> {
+  async listTidsForDate(stationCode: string, businessDate: string): Promise<CashTidSnapshotRow[]> {
     const { data, error } = await this.client
       .from('cod_cash_tid_snapshots')
       .select('*')
       .eq('station_code', stationCode.trim().toUpperCase())
-      .eq('business_date', businessDate);
-    if (error) throw new Error(`CashTidSnapshotStore.listOpenTidsForDate failed: ${error.message}`);
+      .eq('business_date', businessDate)
+      .limit(5000);
+    if (error) throw new Error(`CashTidSnapshotStore.listTidsForDate failed: ${error.message}`);
+    return (data ?? []).map((row) => toRow(row as SnapshotRow));
+  }
+
+  /** One driver's TIDs anchored to any date in [fromDate, toDate] — a tech-issue hold's carried cash. */
+  async listTidsForDriverBetween(
+    stationCode: string,
+    driverId: string,
+    fromDate: string,
+    toDate: string,
+  ): Promise<CashTidSnapshotRow[]> {
+    if (!driverId || fromDate > toDate) return [];
+    const { data, error } = await this.client
+      .from('cod_cash_tid_snapshots')
+      .select('*')
+      .eq('station_code', stationCode.trim().toUpperCase())
+      .ilike('driver_id', driverId.trim())
+      .gte('business_date', fromDate)
+      .lte('business_date', toDate)
+      .limit(5000);
+    if (error) throw new Error(`CashTidSnapshotStore.listTidsForDriverBetween failed: ${error.message}`);
     return (data ?? []).map((row) => toRow(row as SnapshotRow));
   }
 
   /**
-   * Tracking IDs anchored to a DIFFERENT business date than the one given — i.e. cash
-   * already claimed by an earlier day. Without excluding these, a TID captured for D0
-   * whose late handover later moves its lastUpdatedTime to D0+1 would count once via
-   * D0's snapshot merge AND again naturally in D0+1's own ageing-feed query.
+   * Of `trackingIds`, the ones anchored to a DIFFERENT business date — cash already
+   * claimed by another day. Scoped to the candidate IDs (not the whole station) so the
+   * answer never gets truncated by PostgREST's default row cap.
    */
-  async listOpenTrackingIdsAnchoredElsewhere(stationCode: string, businessDate: string): Promise<string[]> {
-    const { data, error } = await this.client
-      .from('cod_cash_tid_snapshots')
-      .select('tracking_id')
-      .eq('station_code', stationCode.trim().toUpperCase())
-      .neq('business_date', businessDate);
-    if (error) {
-      throw new Error(`CashTidSnapshotStore.listOpenTrackingIdsAnchoredElsewhere failed: ${error.message}`);
+  async listTrackingIdsAnchoredElsewhere(
+    stationCode: string,
+    businessDate: string,
+    trackingIds: string[],
+  ): Promise<string[]> {
+    const ids = [...new Set(trackingIds.filter(Boolean))];
+    if (ids.length === 0) return [];
+    const code = stationCode.trim().toUpperCase();
+    const out: string[] = [];
+    for (const batch of chunk(ids, IN_FILTER_CHUNK)) {
+      const { data, error } = await this.client
+        .from('cod_cash_tid_snapshots')
+        .select('tracking_id')
+        .eq('station_code', code)
+        .neq('business_date', businessDate)
+        .in('tracking_id', batch);
+      if (error) {
+        throw new Error(`CashTidSnapshotStore.listTrackingIdsAnchoredElsewhere failed: ${error.message}`);
+      }
+      for (const row of data ?? []) out.push(row.tracking_id as string);
     }
-    return (data ?? []).map((row) => row.tracking_id as string);
+    return out;
   }
 
-  /** Cash has been accounted for (package moved out of CASH_AT_STATION) — delete the row. */
-  async deleteResolved(stationCode: string, trackingIds: string[]): Promise<number> {
-    if (trackingIds.length === 0) return 0;
-    const { error, count } = await this.client
-      .from('cod_cash_tid_snapshots')
-      .delete({ count: 'exact' })
-      .eq('station_code', stationCode.trim().toUpperCase())
-      .in('tracking_id', trackingIds);
-    if (error) throw new Error(`CashTidSnapshotStore.deleteResolved failed: ${error.message}`);
-    return count ?? 0;
-  }
-
-  /** Retention: rows older than this are dropped regardless of resolution status. */
+  /** Retention: rows whose business date is older than this are dropped. */
   async purgeOlderThan(days: number): Promise<number> {
-    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const { error, count } = await this.client
       .from('cod_cash_tid_snapshots')
       .delete({ count: 'exact' })
-      .lt('first_captured_at', cutoff);
+      .lt('business_date', cutoff);
     if (error) throw new Error(`CashTidSnapshotStore.purgeOlderThan failed: ${error.message}`);
     return count ?? 0;
   }

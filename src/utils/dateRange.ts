@@ -97,6 +97,12 @@ export function ymdFromIstEpochMs(ms: number): string {
   return todayIstYmd(ms);
 }
 
+/** Ageing-style unzoned IST wall clock (`YYYY-MM-DD HH:mm:ss`) from epoch ms. */
+export function istTimestampFromEpochMs(ms: number): string {
+  const ist = new Date(ms + IST_OFFSET_MINUTES * 60 * 1000);
+  return ist.toISOString().slice(0, 19).replace('T', ' ');
+}
+
 /**
  * Ops business date for an instant.
  * Cash / deposits before `startHourIst` (default 5:00 IST) belong to the

@@ -571,9 +571,8 @@ export interface PackageSummaryEntry {
 }
 
 /**
- * One tracking ID captured by the 11 PM cash-TID snapshot: still CASH_AT_STATION
- * (cash not yet handed to the station) as of that station's cutoff for `businessDate`.
- * Re-checked by trackingId (batchGetPackageSummary) rather than by re-querying the
+ * One cash tracking ID anchored to the business date it was first collected on (by the
+ * 11 PM snapshot or by a reconciliation view of that date). Re-checked by trackingId (batchGetPackageSummary) rather than by re-querying the
  * ageing feed for `businessDate`, since a late handover moves lastUpdatedTime to the
  * day the store actually pays, not the day the shipment was delivered.
  */

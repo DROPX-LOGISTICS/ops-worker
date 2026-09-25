@@ -82,7 +82,7 @@ export const AMAZON_RESOURCES = {
 } as const;
 
 /**
- * Cash-TID snapshot: captures CASH_AT_STATION tracking IDs nightly at this IST hour, so a
+ * Cash-TID snapshot: anchors cash tracking IDs to their business date nightly at this IST hour, so a
  * store that hands over cash a day late (moving the package's lastUpdatedTime to the next
  * day) still has its cash attributed to the day it was actually delivered/expected.
  */

@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import type { Env, AmazonAuthContext, AgeingPackageDetail } from '../types';
+import type { Env, AmazonAuthContext } from '../types';
 import { ValidationInputError } from '../errors';
 import { ALLOWED_STATIONS, API_CACHE_TTL_MS } from '../config';
 import { getBusinessDayRange, todayIstYmd } from '../utils/dateRange';
@@ -10,9 +10,10 @@ import { buildExpectedCashFromAgeing } from '../utils/expectedCash';
 import { enrichReconciliationWithAgeing } from '../utils/reconState';
 import { loadWorkforceRosterMap } from '../services/workforceRoster';
 import {
-  loadSnapshotPackagesForDate,
-  loadTrackingIdsClaimedByOtherDates,
-  mergeSnapshotIntoAgeing,
+  loadDateScopedCashPackages,
+  parseTechHolds,
+  techHoldsCacheKey,
+  type TechHold,
 } from '../services/cashTidSnapshot';
 import {
   reconcileRemittancePending,
@@ -28,6 +29,8 @@ interface StationDateBody {
   date?: string;
   /** When true, bypass the 60s response cache and recompute from Amazon. */
   fresh?: boolean;
+  /** Ops Pulse tech-issue holds for this date (see services/cashTidSnapshot TechHold). */
+  techHolds?: unknown;
 }
 
 interface RemittanceVerifyBody extends StationDateBody {
@@ -48,6 +51,7 @@ async function parseStationDate(
   date: string;
   range: ReturnType<typeof getBusinessDayRange>;
   fresh: boolean;
+  techHolds: TechHold[];
 }> {
   let body: StationDateBody = {};
   try {
@@ -68,7 +72,7 @@ async function parseStationDate(
   const range = getBusinessDayRange(date, Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '5'));
   const fresh =
     body.fresh === true || (c.req.query('fresh') ?? '').trim() === '1';
-  return { stationCode, date, range, fresh };
+  return { stationCode, date, range, fresh, techHolds: parseTechHolds(body.techHolds) };
 }
 
 /** Session failure that must be returned as-is and never cached. */
@@ -146,9 +150,9 @@ async function respondCached(
  * { "stationCode": "JDBD", "date": "2026-08-02" }
  */
 export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>) {
-  const { stationCode, date, range, fresh } = await parseStationDate(c);
+  const { stationCode, date, range, fresh, techHolds } = await parseStationDate(c);
 
-  return respondCached(c, `exec:recon:${stationCode}:${date}`, fresh, async () => {
+  return respondCached(c, `exec:recon:${stationCode}:${date}${techHoldsCacheKey(techHolds)}`, fresh, async () => {
     const session = await requireAmazonSessionOrThrow(
       c.env,
       `executive-recon:${stationCode}`,
@@ -158,7 +162,7 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
     const provider = createStationDataProvider(c.env);
     const drivers = await provider.getActiveDrivers(stationCode, session.auth);
 
-    const [rawReconciliation, ageingPackagesRaw, roster, snapshotPackages, claimedElsewhere] = await Promise.all([
+    const [rawReconciliation, ageingPackagesRaw, roster] = await Promise.all([
       provider.getDriverReconciliation(stationCode, range, drivers, session.auth),
       provider.getAgeingDrillDownData(
         stationCode,
@@ -169,23 +173,20 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
         Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '5'),
       ),
       loadWorkforceRosterMap(c.env),
-      // Fills back in tracking IDs a late cash handover moved out of this date's ageing
-      // bucket (see services/cashTidSnapshot.ts) — never throws, so a snapshot hiccup
-      // degrades to "ageing feed only" instead of failing this whole request.
-      loadSnapshotPackagesForDate(c.env, stationCode, date).catch((err) => {
-        console.error(`Cash-TID snapshot merge lookup failed for ${stationCode}/${date}`, err);
-        return [] as AgeingPackageDetail[];
-      }),
-      // The other half of the fix: a TID already anchored to a DIFFERENT date must not
-      // also be counted here just because its lastUpdatedTime now happens to fall in
-      // this date's window too (that's the double-count the merge above would otherwise
-      // create once the late handover actually lands).
-      loadTrackingIdsClaimedByOtherDates(c.env, stationCode, date),
     ]);
-    const ageingPackagesOwnedByThisDate = claimedElsewhere.size
-      ? ageingPackagesRaw.filter((pkg) => !claimedElsewhere.has(pkg.trackingId))
-      : ageingPackagesRaw;
-    const ageingPackages = mergeSnapshotIntoAgeing(ageingPackagesOwnedByThisDate, snapshotPackages);
+    const { packages: ageingPackages, held: heldPackages } = await loadDateScopedCashPackages({
+      env: c.env,
+      provider,
+      auth: session.auth,
+      stationCode,
+      businessDate: date,
+      range,
+      reconciliation: rawReconciliation,
+      ageingPackagesRaw,
+      drivers,
+      techHolds,
+      waitUntil: (p) => c.executionCtx.waitUntil(p),
+    });
 
     const expectedCash = buildExpectedCashFromAgeing(
       drivers,
@@ -215,6 +216,8 @@ export async function driverReconciliationHandler(c: Context<{ Bindings: Env }>)
       sameDayPendingReconTotal,
       completedReconTotal,
       expectedCash,
+      // Tech-issue associates' cash held out of this day (still with the associate).
+      heldCash: buildExpectedCashFromAgeing(drivers, heldPackages, roster.byTransporterId),
       workforceRoster: {
         source: roster.source,
         count: roster.count,
@@ -269,10 +272,10 @@ export async function liabilitySummaryExecutiveHandler(c: Context<{ Bindings: En
  * { "stationCode": "JDBD", "date": "2026-08-03" }
  */
 export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
-  const { stationCode, date, range, fresh } = await parseStationDate(c);
+  const { stationCode, date, range, fresh, techHolds } = await parseStationDate(c);
   const startHourIst = Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '5');
 
-  return respondCached(c, `exec:remittance:${stationCode}:${date}`, fresh, async () => {
+  return respondCached(c, `exec:remittance:${stationCode}:${date}${techHoldsCacheKey(techHolds)}`, fresh, async () => {
     const session = await requireAmazonSessionOrThrow(
       c.env,
       `executive-remittance:${stationCode}`,
@@ -281,12 +284,28 @@ export async function remittanceHandler(c: Context<{ Bindings: Env }>) {
 
     const provider = createStationDataProvider(c.env);
 
-    const [drivers, all, sameDayPackages, roster] = await Promise.all([
+    const [drivers, all, sameDayAgeingRaw, roster] = await Promise.all([
       provider.getActiveDrivers(stationCode, session.auth),
       provider.getRemittances(stationCode, range, session.auth),
       provider.getAgeingDrillDownData(stationCode, date, session.auth, undefined, undefined, startHourIst),
       loadWorkforceRosterMap(c.env),
     ]);
+    // Same date-scoped cash as driver reconciliation (snapshot exclusions + recon-only
+    // TIDs), so Step 3's expected matches the cash sheet instead of the raw feed.
+    const sameDayReconciliation = await provider.getDriverReconciliation(stationCode, range, drivers, session.auth);
+    const { packages: sameDayPackages } = await loadDateScopedCashPackages({
+      env: c.env,
+      provider,
+      auth: session.auth,
+      stationCode,
+      businessDate: date,
+      range,
+      reconciliation: sameDayReconciliation,
+      ageingPackagesRaw: sameDayAgeingRaw,
+      drivers,
+      techHolds,
+      waitUntil: (p) => c.executionCtx.waitUntil(p),
+    });
 
     const dayRemittances = all.filter(
       (r) => r.creationDate >= range.startTime && r.creationDate <= range.endTime,

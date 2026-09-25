@@ -4,7 +4,7 @@ import type {
   Money,
   ReconBreakdownItem,
 } from '../types';
-import { ageingCalendarYmd, parseAgeingUpdatedMs, todayIstYmd } from './dateRange';
+import { ageingCalendarYmd, istTimestampFromEpochMs, parseAgeingUpdatedMs, todayIstYmd } from './dateRange';
 import { round2 } from './number';
 
 /** Ageing package state → recon classification for the requested date. */
@@ -136,6 +136,56 @@ export function sumAgeingReconByDriver(
   }
 
   return byDriver;
+}
+
+/**
+ * Cash tracking IDs Amazon's driver reconciliation still has pending for this business
+ * day that the ageing feed never returns (e.g. alphanumeric access-point IDs like
+ * `AP737146364416`, which do not show up in ageing or search). Without these the
+ * driver's expected cash is lower than recon pending by exactly those amounts.
+ *
+ * Returned as synthetic Cash In Associate ageing rows (amount in paise, like the feed),
+ * keyed to the reconciling driver, so they flow through expected cash and pending recon
+ * exactly like a normal ageing row. Items outside `range` (earlier days' pending, which
+ * overallPendingRecon is cumulative over) and any ID in `excludeIds` are skipped.
+ */
+export function reconOnlyCashPackages(
+  entries: DriverReconciliationEntry[],
+  range: { startTime: number; endTime: number },
+  excludeIds: Set<string>,
+): AgeingPackageDetail[] {
+  const out: AgeingPackageDetail[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const driverId = (entry.driverInfo?.id ?? '').trim() || null;
+    for (const item of entry.paymentInfo?.overallPendingReconBreakdownList ?? []) {
+      const trackingId = (item.trackingId ?? '').trim();
+      if (!trackingId || excludeIds.has(trackingId) || seen.has(trackingId)) continue;
+      if (!isCashMethod(item.paymentMethod)) continue;
+      const at = Number(item.moneyCollectionTime);
+      if (!Number.isFinite(at) || at < range.startTime || at > range.endTime) continue;
+      const amount = Number(item.amount?.value ?? 0);
+      if (!(amount > 0)) continue;
+      seen.add(trackingId);
+      out.push({
+        trackingId,
+        driverId,
+        paymentMethod: 'CASH',
+        actualPaymentMethod: 'CASH',
+        receivableAmount: Math.round(amount * 100),
+        orderAmount: Math.round(amount * 100),
+        state: 'Cash In Associate',
+        reason: 'RECON_ONLY',
+        packageType: null,
+        lastUpdatedTime: istTimestampFromEpochMs(at),
+        orderingOrderId: null,
+        stationCode: null,
+        dspName: null,
+        accessPointId: null,
+      });
+    }
+  }
+  return out;
 }
 
 function moneyWithValue(existing: Money | undefined, value: number): Money {

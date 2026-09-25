@@ -30,7 +30,7 @@ import {
   ciaTouchClaimHandler,
 } from './routes/cashInAssociate';
 import { ciaDailyCron } from './services/ciaSnapshotRunner';
-import { runCashTidSnapshotHandler } from './routes/cashTidSnapshot';
+import { backfillCarryoverHandler, runCashTidSnapshotHandler } from './routes/cashTidSnapshot';
 import { runCashTidSnapshotForAllStations } from './services/cashTidSnapshot';
 import { dbDiagHandler } from './routes/dbDiag';
 import { listNotificationsHandler, acknowledgeNotificationHandler } from './routes/notifications';
@@ -85,6 +85,7 @@ app.post('/api/admin/executive/liability-summary', liabilitySummaryExecutiveHand
 app.post('/api/admin/executive/remittance', remittanceHandler);
 app.post('/api/admin/executive/remittance/verify', remittanceVerifyHandler);
 app.post('/api/admin/cash-tid-snapshot/run', runCashTidSnapshotHandler);
+app.post('/api/admin/cash-tid-snapshot/backfill-carryover', backfillCarryoverHandler);
 app.get('/api/admin/executive/cash-in-associate/network', ciaNetworkHandler);
 app.get('/api/admin/executive/cash-in-associate/daily-ledger', ciaDailyLedgerHandler);
 app.get('/api/admin/executive/cash-in-associate', ciaStationHandler);
@@ -132,9 +133,8 @@ app.notFound((c) => c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404));
 const CIA_REFRESH_CRON = '30 0,2,4,6,8,10,12,14 * * *';
 
 /**
- * Cash-TID snapshot cutoff: 23:00 IST (= 17:30 UTC) daily. Resolves yesterday's still-open
- * rows first (deletes ones no longer CASH_AT_STATION), then captures tonight's outstanding
- * CASH_AT_STATION tracking IDs, then purges anything past the retention window.
+ * Cash-TID snapshot cutoff: 23:00 IST (= 17:30 UTC) daily. Anchors every cash tracking ID
+ * in today's ageing feed to today (insert-if-absent), then purges past the retention window.
  */
 const CASH_TID_SNAPSHOT_CRON = '30 17 * * *';
 

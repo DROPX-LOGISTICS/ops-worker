@@ -31,8 +31,8 @@ OPS_PULSE_URL = "https://ops.dropxlogistics.com"
 # CIA snapshots: every 2 hours 06:00–20:00 IST (00:30–14:30 UTC).
 # Each kick starts/resumes today's run and bursts stations within the
 # wall-time budget — no every-minute ticker (avoids idle CPU burn).
-# Cash-TID snapshot: once daily at 23:00 IST (17:30 UTC) — resolves yesterday's
-# open rows, captures tonight's CASH_AT_STATION backlog, purges past retention.
+# Cash-TID snapshot: once daily at 23:00 IST (17:30 UTC) — anchors today's cash
+# tracking IDs to today, purges past retention.
 [triggers]
 crons = ["30 0,2,4,6,8,10,12,14 * * *", "30 17 * * *"]
 
