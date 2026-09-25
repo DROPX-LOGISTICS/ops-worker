@@ -6,7 +6,7 @@ export const ALLOWED_STATIONS: ReadonlySet<string> = new Set([
   'KGQA', 'KGQC', 'TLPA', 'TLPB', 'PEUA', 'KGQE', 'QLDA', 'KOZA', 'KLZH', 'KLZA',
   'KTUB', 'KTUR', 'GDRD', 'XAPH', 'GNTF', 'GNTI', 'XAPL', 'GYMC',
   'XAPI', 'NLRC', 'NLRE', 'NLRF', 'TIRC', 'JDBD', 'JGBA', 'RPRN', 'JUGD', 'SPBE',
-  'JUGF', 'KANA', 'KDJE', 'KDJG', 'KTUO', 'HBSC',
+  'JUGF', 'KANA', 'KDJE', 'KDJG', 'KTUO', 'HBSC', 'KBWE',
 ]);
 
 /** Default portal login account (shared across most stations). */
