@@ -67,14 +67,44 @@ interface RemittanceResponse {
   remittanceList?: RawRemittanceEntry[];
 }
 
+/**
+ * `/v1/getRemittance` (`tmSystem`) returns `submissionDate` in unix
+ * *seconds* while `creationDate`/`lastUpdated` stay in ms — legacy `cod`
+ * uses ms everywhere. A 10-digit value is unambiguously seconds for any
+ * date this codebase will see (13-digit ms would be the year 5138+).
+ */
+function toEpochMs(value: number): number {
+  return value > 0 && value < 1e12 ? value * 1000 : value;
+}
+
+/**
+ * Legacy `cod` returns the rows under `remittanceList`; v1 is expected to as
+ * well, but that key has not been confirmed from v1 traffic. Accept any array
+ * of remittance-shaped objects so a different v1 key can never silently come
+ * back empty and force the lagging legacy fallback (which is exactly the
+ * "code not found" failure this v1 switch exists to fix).
+ */
+function remittanceRows(data: unknown): RawRemittanceEntry[] {
+  if (Array.isArray(data)) return data as RawRemittanceEntry[];
+  if (!data || typeof data !== 'object') return [];
+  const record = data as Record<string, unknown>;
+  if (Array.isArray(record.remittanceList)) return record.remittanceList as RawRemittanceEntry[];
+  const found = Object.values(record).find(
+    (value) =>
+      Array.isArray(value) &&
+      value.some((item) => Boolean(item) && typeof item === 'object' && 'remittanceCode' in (item as object)),
+  );
+  return (found as RawRemittanceEntry[] | undefined) ?? [];
+}
+
 function normaliseRemittance(row: RawRemittanceEntry): RemittanceEntry {
   const submissionDate =
-    row.submissionDate == null || row.submissionDate === 0 ? null : Number(row.submissionDate);
+    row.submissionDate == null || row.submissionDate === 0 ? null : toEpochMs(Number(row.submissionDate));
   return {
     remittanceCode: row.remittanceCode ?? null,
     remittanceId: row.remittanceId ?? '',
-    creationDate: Number(row.creationDate ?? 0),
-    lastUpdated: Number(row.lastUpdated ?? 0),
+    creationDate: toEpochMs(Number(row.creationDate ?? 0)),
+    lastUpdated: toEpochMs(Number(row.lastUpdated ?? 0)),
     submissionDate,
     createdBy: row.createdBy ?? '',
     submittedBy: row.submittedBy ?? null,
@@ -519,16 +549,38 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     auth: AmazonAuthContext,
     opts?: { lockPortalEndToRange?: boolean },
   ): Promise<RemittanceEntry[]> {
-    const { resourcePath, processName } = AMAZON_RESOURCES.getRemittance;
     const anchorYmd = ymdFromIstEpochMs(range.endTime);
     // Default: end at max(request, today) so next-day deposits stay visible.
     // CIA historical chunks lock the portal end to the chunk anchor only.
     const fetchRange = opts?.lockPortalEndToRange
       ? getRemittanceFetchRange(anchorYmd)
       : getRemittancePortalFetchRange(anchorYmd, todayIstYmd());
+
+    // v1 (`tmSystem`) is what the bank-deposits UI itself reads and is the
+    // first to show a CREATED→SUBMITTED transition; legacy `cod` has been
+    // observed lagging it by hours for the same record. Fall back to legacy
+    // only if v1 errors or comes back empty (e.g. before it existed for an
+    // account/region).
+    try {
+      const primary = AMAZON_RESOURCES.getRemittance;
+      const data = await this.callProxy<{ stationCode: string; dateRange: DateRange }, RemittanceResponse>(
+        primary.resourcePath,
+        primary.processName,
+        { stationCode, dateRange: fetchRange },
+        auth,
+        { refererPath: '/station/dashboard/bankdeposits' },
+      );
+      const rows = remittanceRows(data);
+      if (rows.length) return rows.map(normaliseRemittance);
+      console.warn(`getRemittances: v1 returned no rows for ${stationCode}; using legacy`);
+    } catch (err) {
+      console.warn(`getRemittances: v1 fetch failed for ${stationCode}, falling back to legacy`, err);
+    }
+
+    const legacy = AMAZON_RESOURCES.getRemittanceLegacy;
     const data = await this.callProxy<{ stationCode: string; dateRange: DateRange }, RemittanceResponse>(
-      resourcePath,
-      processName,
+      legacy.resourcePath,
+      legacy.processName,
       { stationCode, dateRange: fetchRange },
       auth,
       { refererPath: '/station/dashboard/bankdeposits' },

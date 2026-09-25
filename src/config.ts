@@ -52,8 +52,18 @@ export const AMAZON_RESOURCES = {
     httpMethod: 'post' as const,
   },
   getStationLiabilitySummary: { resourcePath: '/v1/getStationLiabilitySummary', processName: 'codNAWS' },
-  /** Bank deposits page uses legacy `cod` (richer remittanceId / stationVariance). */
+  /**
+   * The bank-deposits UI itself reads `/v1/getRemittance` (`tmSystem`) — its
+   * CREATED→SUBMITTED status/code transitions land here first. The legacy
+   * `cod` process (richer remittanceId / stationVariance) has been observed
+   * lagging v1 by hours for the same record, so v1 is primary with legacy as
+   * a fallback (see AmazonLogisticsProvider.getRemittances).
+   */
   getRemittance: {
+    resourcePath: '/v1/getRemittance',
+    processName: 'tmSystem',
+  },
+  getRemittanceLegacy: {
     resourcePath: '/getRemittance',
     processName: 'cod',
   },
