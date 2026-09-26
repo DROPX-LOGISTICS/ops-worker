@@ -9,6 +9,9 @@ export interface Env {
   DATA_PROVIDER: string;
   SUPABASE_URL: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
+  /** People (HRMS) company DB - used to skip stations closed there. */
+  COMPANY_SUPABASE_URL?: string;
+  COMPANY_SUPABASE_SERVICE_ROLE_KEY?: string;
   /** Shared secret the owner's frontend sends as `x-admin-key` to reach /api/admin/*. */
   ADMIN_API_KEY: string;
   /** Optional — enables email delivery (via Resend) alongside the dashboard notification row. */

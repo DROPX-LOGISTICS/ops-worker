@@ -1,3 +1,4 @@
+import { cachedClosedStationCodes } from '../stationClosures';
 import type {
   Env,
   AgeingPackageDetail,
@@ -214,7 +215,8 @@ export async function anchorViewedCashTids(
 const SNAPSHOT_RUN_WALL_BUDGET_MS = 20_000;
 
 function rotatedStationList(): string[] {
-  const stations = [...ALLOWED_STATIONS].sort();
+  const closed = cachedClosedStationCodes();
+  const stations = [...ALLOWED_STATIONS].filter((code) => !closed.has(code)).sort();
   const dayIndex = Math.floor(Date.now() / (24 * 60 * 60 * 1000));
   const offset = dayIndex % stations.length;
   return [...stations.slice(offset), ...stations.slice(0, offset)];

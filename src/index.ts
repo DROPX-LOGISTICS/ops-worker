@@ -1,3 +1,4 @@
+import { closedStationCodes, openStationCodes } from './stationClosures';
 import { Hono } from 'hono';
 export { AmazonOnboardingSource } from './onboarding/service';
 import { cors } from 'hono/cors';
@@ -64,7 +65,7 @@ app.use(
 app.onError(errorHandler);
 
 app.get('/api/health', healthHandler);
-app.get('/api/stations', (c) => c.json({ stations: Array.from(ALLOWED_STATIONS) }));
+app.get('/api/stations', async (c) => c.json({ stations: await openStationCodes(c.env, ALLOWED_STATIONS) }));
 
 // All Amazon-backed routes require x-admin-key.
 app.use('/api/admin/*', adminAuth);
@@ -149,6 +150,8 @@ async function scheduled(
   env: Env,
   ctx: ExecutionContext,
 ): Promise<void> {
+  // Refresh the stations closed in People before any run builds its station list.
+  await closedStationCodes(env);
   if (event.cron === CASH_TID_SNAPSHOT_CRON) {
     ctx.waitUntil(
       runCashTidSnapshotForAllStations(env)

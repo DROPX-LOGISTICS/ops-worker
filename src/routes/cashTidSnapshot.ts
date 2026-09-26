@@ -1,3 +1,4 @@
+import { openStationCodes } from '../stationClosures';
 import type { Context } from 'hono';
 import type { Env } from '../types';
 import { ValidationInputError } from '../errors';
@@ -65,7 +66,7 @@ export async function backfillCarryoverHandler(c: Context<{ Bindings: Env }>) {
   if (stationCode && !ALLOWED_STATIONS.has(stationCode)) {
     throw new ValidationInputError(`Unknown or missing station code: ${stationCode}`);
   }
-  const stations = stationCode ? [stationCode] : [...ALLOWED_STATIONS].sort();
+  const stations = stationCode ? [stationCode] : await openStationCodes(c.env, ALLOWED_STATIONS);
   const results = [];
   for (const code of stations) {
     results.push(await backfillMorningCarryover(c.env, { stationCode: code, date, anchorDate, cutoffIst, apply }));

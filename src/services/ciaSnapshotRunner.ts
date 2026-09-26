@@ -1,4 +1,5 @@
 ﻿import type { Env, CiaStationPayload, CiaStationSummary, CiaSnapshotRun, CiaStationSnapshot } from '../types';
+import { cachedClosedStationCodes } from '../stationClosures';
 import {
   ALLOWED_STATIONS,
   CIA_CHUNK_PENDING_MARKER,
@@ -48,7 +49,8 @@ function emptyPayload(fromDate: string, toDate: string): CiaStationPayload {
 }
 
 function stationList(): string[] {
-  return [...ALLOWED_STATIONS].sort();
+  const closed = cachedClosedStationCodes();
+  return [...ALLOWED_STATIONS].filter((code) => !closed.has(code)).sort();
 }
 
 function isRetryPendingSnapshot(status: string, error: string | null | undefined): boolean {
