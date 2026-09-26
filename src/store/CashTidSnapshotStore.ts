@@ -103,6 +103,22 @@ export class CashTidSnapshotStore {
     return (data ?? []).map((row) => toRow(row as SnapshotRow));
   }
 
+  /** Stored cash amount (paise) per tracking ID, for the given IDs. */
+  async listAmountsByTrackingIds(stationCode: string, trackingIds: string[]): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    const ids = [...new Set(trackingIds.filter(Boolean))];
+    for (const batch of chunk(ids, IN_FILTER_CHUNK)) {
+      const { data, error } = await this.client
+        .from('cod_cash_tid_snapshots')
+        .select('tracking_id, expected_amount')
+        .eq('station_code', stationCode.trim().toUpperCase())
+        .in('tracking_id', batch);
+      if (error) throw new Error(`CashTidSnapshotStore.listAmountsByTrackingIds failed: ${error.message}`);
+      for (const row of data ?? []) out.set(row.tracking_id as string, Number(row.expected_amount ?? 0) || 0);
+    }
+    return out;
+  }
+
   /** One driver's TIDs anchored to any date in [fromDate, toDate] — a tech-issue hold's carried cash. */
   async listTidsForDriverBetween(
     stationCode: string,

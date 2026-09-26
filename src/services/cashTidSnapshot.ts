@@ -41,7 +41,9 @@ function toNewCashTid(pkg: AgeingPackageDetail): NewCashTid {
   return {
     trackingId: pkg.trackingId,
     capturedState: pkg.state,
-    expectedAmount: pkg.receivableAmount || pkg.orderAmount || 0,
+    // Never fall back to orderAmount: on split-payment orders (part cash) Amazon reports
+    // receivableAmount 0 and the full order value, which is not the cash collected.
+    expectedAmount: pkg.receivableAmount || 0,
     driverId: pkg.driverId,
   };
 }
@@ -400,6 +402,58 @@ export type DateScopedCash = {
 };
 
 /**
+ * Split-payment cash orders (e.g. a phone paid partly in cash) come through ageing with
+ * receivableAmount 0 and orderAmount = the full order value, so they added nothing to
+ * expected cash even though the associate collected cash. The collected amount is taken
+ * from Amazon's driver reconciliation breakdown while the TID is still pending recon, and
+ * otherwise from the snapshot (which records that amount when the day is first viewed).
+ * A stored amount equal to the order value is the old orderAmount fallback and is ignored.
+ */
+async function fillSplitPaymentCash(
+  env: Env,
+  code: string,
+  packages: AgeingPackageDetail[],
+  reconciliation: DriverReconciliationEntry[],
+): Promise<AgeingPackageDetail[]> {
+  const zero = packages.filter(
+    (pkg) => isCashMethod(pkg.actualPaymentMethod) && !(pkg.receivableAmount > 0) && (pkg.orderAmount ?? 0) > 0,
+  );
+  if (zero.length === 0) return packages;
+
+  const reconPaise = new Map<string, number>();
+  for (const entry of reconciliation) {
+    const lists = [
+      entry.paymentInfo?.overallPendingReconBreakdownList ?? [],
+      entry.paymentInfo?.sameDayPendingReconBreakdownList ?? [],
+    ];
+    for (const item of lists.flat()) {
+      const id = (item.trackingId ?? '').trim();
+      const value = Number(item.amount?.value ?? 0);
+      if (id && value > 0 && isCashMethod(item.paymentMethod)) reconPaise.set(id, Math.round(value * 100));
+    }
+  }
+  const stored = await createCashTidSnapshotStore(env)
+    .listAmountsByTrackingIds(code, zero.map((pkg) => pkg.trackingId))
+    .catch((err) => {
+      console.error(`Split-payment amount lookup failed for ${code}`, err);
+      return new Map<string, number>();
+    });
+
+  const patched = new Map<string, number>();
+  for (const pkg of zero) {
+    const fromRecon = reconPaise.get(pkg.trackingId);
+    const fromStore = stored.get(pkg.trackingId);
+    const amount =
+      fromRecon ?? (fromStore && fromStore > 0 && fromStore !== pkg.orderAmount ? fromStore : undefined);
+    if (amount) patched.set(pkg.trackingId, amount);
+  }
+  if (patched.size === 0) return packages;
+  return packages.map((pkg) =>
+    patched.has(pkg.trackingId) ? { ...pkg, receivableAmount: patched.get(pkg.trackingId)! } : pkg,
+  );
+}
+
+/**
  * The cash packages that belong to `businessDate`, shared by every view that shows a
  * day's expected cash (driver reconciliation, remittance) so they always agree:
  *  - the ageing feed for the date,
@@ -465,8 +519,13 @@ export async function loadDateScopedCashPackages(args: {
   );
   // A released associate's cash was anchored to the held days on purpose; on the resolve
   // day it belongs here, so the anchor exclusion is skipped for them.
-  const ownedByThisDate = candidates.filter(
-    (pkg) => !claimedElsewhere.has(pkg.trackingId) || releasedTas.has(normalizeTransporterId(pkg.driverId)),
+  const ownedByThisDate = await fillSplitPaymentCash(
+    env,
+    code,
+    candidates.filter(
+      (pkg) => !claimedElsewhere.has(pkg.trackingId) || releasedTas.has(normalizeTransporterId(pkg.driverId)),
+    ),
+    reconciliation,
   );
 
   const anchoring = anchorViewedCashTids(env, code, businessDate, ownedByThisDate);
