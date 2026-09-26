@@ -31,7 +31,7 @@ import {
   ciaTouchClaimHandler,
 } from './routes/cashInAssociate';
 import { ciaDailyCron } from './services/ciaSnapshotRunner';
-import { backfillCarryoverHandler, runCashTidSnapshotHandler } from './routes/cashTidSnapshot';
+import { backfillCarryoverHandler, repairAmountsHandler, runCashTidSnapshotHandler } from './routes/cashTidSnapshot';
 import { runCashTidSnapshotForAllStations } from './services/cashTidSnapshot';
 import { dbDiagHandler } from './routes/dbDiag';
 import { listNotificationsHandler, acknowledgeNotificationHandler } from './routes/notifications';
@@ -87,6 +87,7 @@ app.post('/api/admin/executive/remittance', remittanceHandler);
 app.post('/api/admin/executive/remittance/verify', remittanceVerifyHandler);
 app.post('/api/admin/cash-tid-snapshot/run', runCashTidSnapshotHandler);
 app.post('/api/admin/cash-tid-snapshot/backfill-carryover', backfillCarryoverHandler);
+app.post('/api/admin/cash-tid-snapshot/repair-amounts', repairAmountsHandler);
 app.get('/api/admin/executive/cash-in-associate/network', ciaNetworkHandler);
 app.get('/api/admin/executive/cash-in-associate/daily-ledger', ciaDailyLedgerHandler);
 app.get('/api/admin/executive/cash-in-associate', ciaStationHandler);

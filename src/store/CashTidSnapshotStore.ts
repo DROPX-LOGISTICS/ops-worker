@@ -103,6 +103,32 @@ export class CashTidSnapshotStore {
     return (data ?? []).map((row) => toRow(row as SnapshotRow));
   }
 
+  /** Every row for a station (for one-off repairs). */
+  async listAllForStation(stationCode: string): Promise<CashTidSnapshotRow[]> {
+    const { data, error } = await this.client
+      .from('cod_cash_tid_snapshots')
+      .select('*')
+      .eq('station_code', stationCode.trim().toUpperCase())
+      .limit(10000);
+    if (error) throw new Error(`CashTidSnapshotStore.listAllForStation failed: ${error.message}`);
+    return (data ?? []).map((row) => toRow(row as SnapshotRow));
+  }
+
+  /** Overwrite the stored cash amount (paise) for the given tracking IDs. */
+  async setAmount(stationCode: string, trackingIds: string[], amount: number): Promise<number> {
+    let updated = 0;
+    for (const batch of chunk([...new Set(trackingIds)], IN_FILTER_CHUNK)) {
+      const { error, count } = await this.client
+        .from('cod_cash_tid_snapshots')
+        .update({ expected_amount: amount, updated_at: new Date().toISOString() }, { count: 'exact' })
+        .eq('station_code', stationCode.trim().toUpperCase())
+        .in('tracking_id', batch);
+      if (error) throw new Error(`CashTidSnapshotStore.setAmount failed: ${error.message}`);
+      updated += count ?? 0;
+    }
+    return updated;
+  }
+
   /** Stored cash amount (paise) per tracking ID, for the given IDs. */
   async listAmountsByTrackingIds(stationCode: string, trackingIds: string[]): Promise<Map<string, number>> {
     const out = new Map<string, number>();

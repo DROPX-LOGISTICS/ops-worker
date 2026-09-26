@@ -4,6 +4,7 @@ import type { Env } from '../types';
 import { ValidationInputError } from '../errors';
 import { ALLOWED_STATIONS } from '../config';
 import {
+  repairOrderValueAmounts,
   backfillMorningCarryover,
   captureStationCashSnapshot,
   runCashTidSnapshotForAllStations,
@@ -72,4 +73,22 @@ export async function backfillCarryoverHandler(c: Context<{ Bindings: Env }>) {
     results.push(await backfillMorningCarryover(c.env, { stationCode: code, date, anchorDate, cutoffIst, apply }));
   }
   return c.json({ status: 'ok', apply, date, anchorDate, cutoffIst, results });
+}
+
+/**
+ * One-off: zero snapshot amounts that stored a split-payment order's full value.
+ * POST /api/admin/cash-tid-snapshot/repair-amounts  { "stationCode": "GYMC", "apply": false }
+ */
+export async function repairAmountsHandler(c: Context<{ Bindings: Env }>) {
+  let body: { stationCode?: string; apply?: boolean } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    /* empty body */
+  }
+  const stationCode = (body.stationCode || '').trim().toUpperCase();
+  if (!ALLOWED_STATIONS.has(stationCode)) {
+    throw new ValidationInputError(`Unknown or missing station code: ${stationCode}`);
+  }
+  return c.json({ status: 'ok', result: await repairOrderValueAmounts(c.env, stationCode, body.apply === true) });
 }

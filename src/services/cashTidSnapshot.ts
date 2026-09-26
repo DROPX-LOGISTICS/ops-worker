@@ -186,6 +186,55 @@ export async function backfillMorningCarryover(
 }
 
 /**
+ * One-off repair: rows captured before split-payment handling stored the full order value
+ * as the cash amount when Amazon's receivableAmount was 0. Re-check every stored row live
+ * and zero the ones whose stored amount is the order value while receivable is 0 (the view
+ * then fills the real amount from recon when available). Preview unless `apply`.
+ */
+export async function repairOrderValueAmounts(
+  env: Env,
+  stationCode: string,
+  apply: boolean,
+): Promise<{ stationCode: string; ok: boolean; checked?: number; bad?: Array<{ trackingId: string; stored: number }>; fixed?: number; error?: string }> {
+  const code = stationCode.trim().toUpperCase();
+  const store = createCashTidSnapshotStore(env);
+  const rows = (await store.listAllForStation(code)).filter((row) => row.expectedAmount > 0);
+  if (rows.length === 0) return { stationCode: code, ok: true, checked: 0, bad: [], fixed: 0 };
+
+  const session = await ensureValidAmazonSession(env, {
+    stationCode: code,
+    triggeredBy: `cash-tid-snapshot-repair:${code}`,
+    notifyOnFailure: false,
+  });
+  if (!session.ok) return { stationCode: code, ok: false, error: session.error || `Amazon session failed (${session.code})` };
+
+  try {
+    const provider = createStationDataProvider(env);
+    const summaries = (
+      await Promise.all(
+        chunk(rows.map((row) => row.trackingId), CASH_TID_BATCH_CHUNK_SIZE).map((ids) =>
+          provider.getPackageSummaryBatch(code, ids, session.auth),
+        ),
+      )
+    ).flat();
+    const byId = new Map(summaries.map((s) => [s.trackingId, s]));
+    const bad = rows
+      .filter((row) => {
+        const summary = byId.get(row.trackingId);
+        if (!summary || (summary.receivableAmount ?? 0) > 0) return false;
+        const order = summary.orderAmount ?? 0;
+        return order > 0 && (row.expectedAmount === order || row.expectedAmount === Math.round(order * 100));
+      })
+      .map((row) => ({ trackingId: row.trackingId, stored: row.expectedAmount }));
+    const fixed = apply && bad.length ? await store.setAmount(code, bad.map((b) => b.trackingId), 0) : 0;
+    return { stationCode: code, ok: true, checked: rows.length, bad, fixed };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { stationCode: code, ok: false, error: message };
+  }
+}
+
+/**
  * Anchor what a reconciliation view for `businessDate` just saw. Only rows whose
  * lastUpdatedTime is the moment the cash was collected (Cash In Associate / Delivered)
  * and falls on `businessDate` are trusted here. Cash At Station rows are skipped: their
