@@ -1,6 +1,6 @@
 import type { Context } from 'hono';
 import type { Env, AmazonAuthContext } from '../types';
-import { ValidationInputError } from '../errors';
+import { ProviderError, ValidationInputError } from '../errors';
 import { ALLOWED_STATIONS, API_CACHE_TTL_MS } from '../config';
 import { getBusinessDayRange, todayIstYmd } from '../utils/dateRange';
 import { createStationDataProvider } from '../providers/factory';
@@ -448,7 +448,10 @@ export async function remittanceVerifyHandler(c: Context<{ Bindings: Env }>) {
       fetchAnchor,
       Number(c.env.BUSINESS_DAY_START_HOUR_IST ?? '5'),
     );
-    const all = await provider.getRemittances(stationCode, fetchRange, session.auth);
+    const failedSources: string[] = [];
+    const all = await provider.getRemittances(stationCode, fetchRange, session.auth, {
+      onSourceFailure: (source) => failedSources.push(source),
+    });
     const result = verifyRemittanceEntry(
       all,
       remittanceCode,
@@ -458,6 +461,19 @@ export async function remittanceVerifyHandler(c: Context<{ Bindings: Env }>) {
       codPeriodTo,
       submittedBy,
     );
+
+    // The two portal endpoints can lag each other by hours, so a remittance (or
+    // one of the records summed under its code) may exist only in the endpoint
+    // that just failed. COD Submission blocks the upload on a "not found /
+    // does not match" answer, so that answer must not come from half the data:
+    // report the portal as unavailable instead and let the slip save as pending.
+    if (!result.verified && failedSources.length) {
+      throw new ProviderError(
+        `Amazon remittance data was only partly available (${failedSources.join(', ')} endpoint failed), so ${remittanceCode.trim().toUpperCase()} could not be confirmed. Try again shortly.`,
+        502,
+        'PROVIDER_PARTIAL_DATA',
+      );
+    }
 
     return {
       status: 'ok',

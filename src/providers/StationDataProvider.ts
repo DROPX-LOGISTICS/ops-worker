@@ -63,12 +63,20 @@ export interface StationDataProvider {
    * so a record visible in either counts once and one endpoint failing still
    * returns the other. 'primaryWithFallback' makes one call (v1, legacy only if
    * v1 errors or is empty) for subrequest-budget-sensitive callers (CIA).
+   *
+   * `onSourceFailure` is called in 'both' mode when one endpoint failed and
+   * the rows returned are the other endpoint's only — for callers that must
+   * not treat "missing from a partial read" as "missing on the portal".
    */
   getRemittances(
     stationCode: string,
     range: DateRange,
     auth: AmazonAuthContext,
-    opts?: { lockPortalEndToRange?: boolean; sources?: 'both' | 'primaryWithFallback' },
+    opts?: {
+      lockPortalEndToRange?: boolean;
+      sources?: 'both' | 'primaryWithFallback';
+      onSourceFailure?: (source: 'v1' | 'legacy', reason: unknown) => void;
+    },
   ): Promise<RemittanceEntry[]>;
 
   /** Shipment-level remittance details for pending trackingId diff. */

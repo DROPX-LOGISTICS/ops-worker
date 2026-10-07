@@ -548,7 +548,11 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     stationCode: string,
     range: DateRange,
     auth: AmazonAuthContext,
-    opts?: { lockPortalEndToRange?: boolean; sources?: 'both' | 'primaryWithFallback' },
+    opts?: {
+      lockPortalEndToRange?: boolean;
+      sources?: 'both' | 'primaryWithFallback';
+      onSourceFailure?: (source: 'v1' | 'legacy', reason: unknown) => void;
+    },
   ): Promise<RemittanceEntry[]> {
     const anchorYmd = ymdFromIstEpochMs(range.endTime);
     // Default: end at max(request, today) so next-day deposits stay visible.
@@ -601,8 +605,14 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     // other's rows. Only when both fail does this throw.
     const [v1, legacy] = await Promise.allSettled([fetchV1(), fetchLegacy()]);
     if (v1.status === 'rejected' && legacy.status === 'rejected') throw legacy.reason;
-    if (v1.status === 'rejected') console.warn(`getRemittances: v1 fetch failed for ${stationCode}; using legacy only`, v1.reason);
-    if (legacy.status === 'rejected') console.warn(`getRemittances: legacy fetch failed for ${stationCode}; using v1 only`, legacy.reason);
+    if (v1.status === 'rejected') {
+      console.warn(`getRemittances: v1 fetch failed for ${stationCode}; using legacy only`, v1.reason);
+      opts?.onSourceFailure?.('v1', v1.reason);
+    }
+    if (legacy.status === 'rejected') {
+      console.warn(`getRemittances: legacy fetch failed for ${stationCode}; using v1 only`, legacy.reason);
+      opts?.onSourceFailure?.('legacy', legacy.reason);
+    }
     return mergeRemittanceSources(
       v1.status === 'fulfilled' ? v1.value : [],
       legacy.status === 'fulfilled' ? legacy.value : [],
