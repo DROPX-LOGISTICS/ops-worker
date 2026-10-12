@@ -24,6 +24,7 @@ import { ProviderError } from '../errors';
 import { ALLOWED_STATIONS, AMAZON_RESOURCES } from '../config';
 import { round2 } from '../utils/number';
 import { mergeRemittanceSources } from '../utils/remittanceMerge';
+import { reconciliationIdentity } from '../utils/reconciliationIdentity';
 
 interface ProxyEnvelope<TReq> {
   resourcePath: string;
@@ -386,7 +387,9 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       store: entry.driverInfo?.store ?? entry.store ?? false,
       driverInfo: {
         name: entry.driverInfo?.driverName ?? entry.driverInfo?.name ?? 'UNKNOWN',
-        id: entry.driverInfo?.tasId ?? entry.driverInfo?.id ?? null,
+        id: this.strictStatusRead
+          ? reconciliationIdentity(entry.driverInfo ?? {}, drivers, entry.store ?? false)
+          : entry.driverInfo?.tasId ?? entry.driverInfo?.id ?? null,
       },
       providerInfo: entry.providerInfo,
       paymentInfo: entry.paymentInfo,
