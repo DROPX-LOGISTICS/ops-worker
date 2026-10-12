@@ -194,7 +194,7 @@ function normaliseAgeingPackage(row: RawAgeingPackage): AgeingPackageDetail {
  * src/config.ts so switching API generations is a one-line change.
  */
 export class AmazonLogisticsProvider implements StationDataProvider {
-  constructor(private readonly baseUrl: string) { }
+  constructor(private readonly baseUrl: string, private readonly strictStatusRead = false) { }
 
   private async callProxy<TReq, TRes>(
     resourcePath: string,
@@ -354,6 +354,7 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       { stationCode, isActive: true },
       auth,
     );
+    if (this.strictStatusRead && !Array.isArray(data?.driverList)) throw new ProviderError('Driver list unavailable', 502, 'PROVIDER_UPSTREAM_ERROR');
     return (data.driverList ?? []).filter((d) => d.active !== false);
   }
 
@@ -376,6 +377,8 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       { stationCode: string; dateRange: DateRange; driverIdentifierList: typeof driverIdentifierList },
       DriverReconciliationResponse
     >(resourcePath, processName, { stationCode, dateRange: range, driverIdentifierList }, auth);
+
+    if (this.strictStatusRead && !Array.isArray(data?.driverReconciliationList)) throw new ProviderError('Reconciliation list unavailable', 502, 'PROVIDER_UPSTREAM_ERROR');
 
     // Normalise the v1 shape (driverInfo.driverName/.tasId) into the common
     // { name, id } shape validators rely on.
@@ -573,6 +576,17 @@ export class AmazonLogisticsProvider implements StationDataProvider {
         auth,
         { refererPath: '/station/dashboard/bankdeposits' },
       );
+      if (this.strictStatusRead) {
+        const record = data as Record<string, unknown> | null;
+        if (!Array.isArray(data) && !Array.isArray(record?.remittanceList) && !Object.values(record ?? {}).some(value => Array.isArray(value) && value.some(item => item && typeof item === 'object' && 'remittanceCode' in item))) {
+          throw new ProviderError('Remittance list unavailable', 502, 'PROVIDER_UPSTREAM_ERROR');
+        }
+        for (const row of remittanceRows(data)) {
+          if (!row.status || !row.remittanceId || !Number.isFinite(Number(row.expectedAmount?.value)) || row.expectedAmount?.value == null || !Number.isFinite(Number(row.lastUpdated)) || !row.lastUpdated) {
+            throw new ProviderError('Incomplete remittance record', 502, 'PROVIDER_UPSTREAM_ERROR');
+          }
+        }
+      }
       return remittanceRows(data).map(normaliseRemittance);
     };
     const fetchLegacy = async () => {
@@ -584,6 +598,17 @@ export class AmazonLogisticsProvider implements StationDataProvider {
         auth,
         { refererPath: '/station/dashboard/bankdeposits' },
       );
+      if (this.strictStatusRead) {
+        const record = data as Record<string, unknown> | null;
+        if (!Array.isArray(data) && !Array.isArray(record?.remittanceList) && !Object.values(record ?? {}).some(value => Array.isArray(value) && value.some(item => item && typeof item === 'object' && 'remittanceCode' in item))) {
+          throw new ProviderError('Remittance list unavailable', 502, 'PROVIDER_UPSTREAM_ERROR');
+        }
+        for (const row of remittanceRows(data)) {
+          if (!row.status || !row.remittanceId || !Number.isFinite(Number(row.expectedAmount?.value)) || row.expectedAmount?.value == null || !Number.isFinite(Number(row.lastUpdated)) || !row.lastUpdated) {
+            throw new ProviderError('Incomplete remittance record', 502, 'PROVIDER_UPSTREAM_ERROR');
+          }
+        }
+      }
       return remittanceRows(data).map(normaliseRemittance);
     };
 

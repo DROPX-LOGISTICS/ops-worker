@@ -4,6 +4,7 @@ export { AmazonOnboardingSource } from './onboarding/service';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
 import { validateHandler } from './routes/validate';
+import { codStatusHandler } from './routes/codStatus';
 import { healthHandler } from './routes/health';
 import {
   uploadSessionHandler,
@@ -81,6 +82,7 @@ app.get('/api/admin/session/status', sessionStatusHandler);
 app.post('/api/admin/session/ensure', ensureSessionHandler);
 app.post('/api/admin/session/refresh', refreshSessionHandler);
 app.post('/api/admin/amazon/liability-summary', liabilitySummaryHandler);
+app.post('/api/admin/executive/cod-status', codStatusHandler);
 app.post('/api/admin/executive/driver-reconciliation', driverReconciliationHandler);
 app.post('/api/admin/executive/liability-summary', liabilitySummaryExecutiveHandler);
 app.post('/api/admin/executive/remittance', remittanceHandler);

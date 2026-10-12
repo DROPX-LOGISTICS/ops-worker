@@ -86,7 +86,7 @@ class SessionUnavailable extends Error {
   }
 }
 
-async function requireAmazonSessionOrThrow(
+export async function requireAmazonSessionOrThrow(
   env: Env,
   triggeredBy: string,
   stationCode?: string,
@@ -116,7 +116,7 @@ async function requireAmazonSessionOrThrow(
  * Session failures pass through uncached with their proper HTTP status.
  * Pass `fresh: true` to bypass and force a recompute.
  */
-async function respondCached(
+export async function respondCached(
   c: Context<{ Bindings: Env }>,
   key: string,
   fresh: boolean,
