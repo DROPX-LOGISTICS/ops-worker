@@ -10,14 +10,17 @@ const inr=value=>({unit:'INR',value});
 const driver=(id,amount)=>({driverInfo:{id,name:id},paymentInfo:{overallPendingRecon:inr(amount),overallPendingReconBreakdownList:[]}});
 const remit=(status,updatedAt)=>({remittanceId:'a',remittanceCode:'AC1',status,lastUpdated:Date.parse(updatedAt),creationDate:Date.parse('2026-10-11T17:00:00Z'),submissionDate:null,expectedAmount:inr(500),actualAmount:inr(500),variance:inr(0)});
 test('pending count, value and completion use cumulative reconciliation',()=>{
- const result=reconciliationStatus([driver('one',25000),driver('two',500),driver('three',0)],3);
+ const result=reconciliationStatus([driver('one',25000),driver('two',500),driver('three',0)]);
  assert.equal(result.pendingCount,2); assert.equal(result.pendingAmount,25500);assert.equal(result.completedPercent,33.33);
 });
-test('missing, duplicate or incomplete source cannot imply 100% completion',()=>{
- assert.throws(()=>requiredMoney(undefined));assert.throws(()=>requiredMoney({value:''}));assert.throws(()=>reconciliationStatus([],0));
- assert.throws(()=>reconciliationStatus([driver('same',0),driver('same',0)],2));
- assert.equal(reconciliationStatus([driver('one',0)],2).complete,false);
+test('missing or duplicate source cannot imply 100% completion',()=>{
+ assert.throws(()=>requiredMoney(undefined));assert.throws(()=>requiredMoney({value:''}));assert.throws(()=>reconciliationStatus([]));
+ assert.throws(()=>reconciliationStatus([driver('same',0),driver('same',0)]));
  assert.throws(()=>prepareDepositStatus({cashSummary:{expectedAmount:inr(0)}}));
+});
+test('completion uses COD-applicable portal rows, not the larger active driver roster',()=>{
+ const result=reconciliationStatus([driver('one',0),driver('two',0)]);
+ assert.equal(result.complete,true);assert.equal(result.driverCount,2);assert.equal(result.completedPercent,100);
 });
 test('prepare deposit retains expected actual and variance independently',()=>{
  assert.deepEqual(prepareDepositStatus({cashSummary:{expectedAmount:inr(0),actualAmount:inr(10),shortExcessAmount:inr(10)}}),{expectedAmount:0,actualAmount:10,variance:10});

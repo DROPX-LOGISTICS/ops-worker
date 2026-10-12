@@ -28,7 +28,7 @@ export async function codStatusHandler(c: Context<{ Bindings: Env }>) {
     const [reconciliation, prepareDeposit, remittances] = await Promise.all([
       component('reconciliation', async () => {
         const drivers = await provider.getActiveDrivers(stationCode, session.auth);
-        return reconciliationStatus(await provider.getDriverReconciliation(stationCode, range, drivers, session.auth), drivers.length);
+        return reconciliationStatus(await provider.getDriverReconciliation(stationCode, range, drivers, session.auth));
       }),
       component('prepareDeposit', async () => prepareDepositStatus(await provider.getStationLiabilitySummary(stationCode, range, session.auth))),
       component('remittances', async () => {
