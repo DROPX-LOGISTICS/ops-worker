@@ -12,6 +12,7 @@ export function reconciliationIdentity(
   const name = String(info.driverName ?? info.name ?? '').trim();
   if (!name) return null;
   const matches = drivers.filter(driver => driver.driverName?.trim() === name && Boolean(driver.store) === Boolean(info.store ?? store));
-  if (matches.length !== 1 || matches[0].employeeId == null) return null;
-  return String(matches[0].employeeId).trim() || null;
+  const match = matches[0];
+  if (matches.length !== 1 || !match || match.employeeId == null) return null;
+  return String(match.employeeId).trim() || null;
 }
