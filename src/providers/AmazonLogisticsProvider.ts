@@ -585,7 +585,7 @@ export class AmazonLogisticsProvider implements StationDataProvider {
           throw new ProviderError('Remittance list unavailable', 502, 'PROVIDER_UPSTREAM_ERROR');
         }
         for (const row of remittanceRows(data)) {
-          if (!row.status || !row.remittanceId || !Number.isFinite(Number(row.expectedAmount?.value)) || row.expectedAmount?.value == null || !Number.isFinite(Number(row.lastUpdated)) || !row.lastUpdated) {
+          if (!row.status || !row.remittanceId || [row.expectedAmount,row.actualAmount,row.variance].some(m => m?.value == null || !['number','string'].includes(typeof m.value) || String(m.value).trim() === '' || !Number.isFinite(Number(m.value))) || !Number.isFinite(Number(row.lastUpdated)) || !row.lastUpdated) {
             throw new ProviderError('Incomplete remittance record', 502, 'PROVIDER_UPSTREAM_ERROR');
           }
         }
@@ -607,7 +607,7 @@ export class AmazonLogisticsProvider implements StationDataProvider {
           throw new ProviderError('Remittance list unavailable', 502, 'PROVIDER_UPSTREAM_ERROR');
         }
         for (const row of remittanceRows(data)) {
-          if (!row.status || !row.remittanceId || !Number.isFinite(Number(row.expectedAmount?.value)) || row.expectedAmount?.value == null || !Number.isFinite(Number(row.lastUpdated)) || !row.lastUpdated) {
+          if (!row.status || !row.remittanceId || [row.expectedAmount,row.actualAmount,row.variance].some(m => m?.value == null || !['number','string'].includes(typeof m.value) || String(m.value).trim() === '' || !Number.isFinite(Number(m.value))) || !Number.isFinite(Number(row.lastUpdated)) || !row.lastUpdated) {
             throw new ProviderError('Incomplete remittance record', 502, 'PROVIDER_UPSTREAM_ERROR');
           }
         }

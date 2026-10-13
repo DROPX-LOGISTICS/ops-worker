@@ -2,7 +2,7 @@ import type { Context } from 'hono';
 import type { Env } from '../types';
 import { ValidationInputError } from '../errors';
 import { AmazonLogisticsProvider } from '../providers/AmazonLogisticsProvider';
-import { getBusinessDayRange, getRemittancePortalFetchRange, todayIstYmd } from '../utils/dateRange';
+import { getBusinessDayRange, getPrepareDepositRange, getRemittancePortalFetchRange, todayIstYmd } from '../utils/dateRange';
 import { requireAmazonSessionOrThrow, respondCached } from './executiveAmazon';
 import { prepareDepositStatus, reconciliationStatus, remittanceStatus } from '../services/codStatus';
 
@@ -13,7 +13,7 @@ export async function codStatusHandler(c: Context<{ Bindings: Env }>) {
   const stationCode = String(body.stationCode ?? '').trim().toUpperCase();
   if (!/^[A-Z0-9]{3,12}$/.test(stationCode)) throw new ValidationInputError('Valid station code required');
   const date = todayIstYmd();
-  return respondCached(c, `cod-status:v2:${stationCode}:${date}`, body.fresh === true, async () => {
+  return respondCached(c, `cod-status:v3:${stationCode}:${date}`, body.fresh === true, async () => {
     const session = await requireAmazonSessionOrThrow(c.env, `cod-status:${stationCode}`, stationCode);
     const provider = new AmazonLogisticsProvider(c.env.AMAZON_PROXY_BASE_URL, true);
     // Match the portal's current calendar date; the pending-reconciliation value itself is cumulative.
@@ -30,7 +30,7 @@ export async function codStatusHandler(c: Context<{ Bindings: Env }>) {
         const drivers = await provider.getActiveDrivers(stationCode, session.auth);
         return reconciliationStatus(await provider.getDriverReconciliation(stationCode, range, drivers, session.auth));
       }),
-      component('prepareDeposit', async () => prepareDepositStatus(await provider.getStationLiabilitySummary(stationCode, range, session.auth))),
+      component('prepareDeposit', async () => ({...prepareDepositStatus(await provider.getStationLiabilitySummary(stationCode, getPrepareDepositRange(date), session.auth)), sourceScope: 'outstanding_history', sourceWindow: getPrepareDepositRange(date)})),
       component('remittances', async () => {
         let complete = true;
         const entries = await provider.getRemittances(stationCode, range, session.auth, { sources: 'both', onSourceFailure: () => { complete = false; } });

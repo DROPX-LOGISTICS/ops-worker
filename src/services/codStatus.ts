@@ -4,11 +4,10 @@ import { todayIstYmd } from '../utils/dateRange';
 
 export function requiredMoney(value: unknown): number {
   const money = value as { value?: unknown; unit?: string } | null;
-  if (money?.value == null || money.value === '' || !Number.isFinite(Number(money.value)) || (money.unit && money.unit !== 'INR')) throw new Error('Amount unavailable');
+  if (money?.value == null || !['number','string'].includes(typeof money.value) || String(money.value).trim() === '' || !Number.isFinite(Number(money.value)) || (money.unit && money.unit !== 'INR')) throw new Error('Amount unavailable');
   return round2(Number(money.value));
 }
-/** Portal collection and transaction timestamps are distinct. Never substitute a
- * refresh timestamp (or transaction update) for the COD collection date. */
+/** Validated portal timestamp in milliseconds; never use the refresh time. */
 export function codSourceTime(value: unknown, now = Date.now()): number | null {
   if (value == null || value === '') return null;
   const n = Number(value);
@@ -25,12 +24,15 @@ export function reconciliationStatus(entries: DriverReconciliationEntry[]) {
       id, name: entry.driverInfo.name, pendingAmount: requiredMoney(entry.paymentInfo?.overallPendingRecon),
       packages: (entry.paymentInfo?.overallPendingReconBreakdownList ?? []).map(item => ({
         trackingId: item.trackingId, amount: requiredMoney(item.amount), paymentMethod: item.paymentMethod,
-        collectedAt: codSourceTime(item.moneyCollectionTime),
+        // SCC's pending-reconciliation adapter uses transactionTime when the
+        // v1 response omits moneyCollectionTime. Keep the provenance visible.
+        collectedAt: codSourceTime(item.moneyCollectionTime) ?? codSourceTime(item.transactionTime),
+        dateSource: codSourceTime(item.moneyCollectionTime) !== null ? 'collection' : codSourceTime(item.transactionTime) !== null ? 'pending_transaction' : null,
         transactionAt: codSourceTime(item.transactionTime),
       })),
     };
   });
-  const pending = drivers.filter(row => Math.abs(row.pendingAmount) >= 0.01);
+  const pending = drivers.filter(row => Math.abs(row.pendingAmount) >= 0.01 || row.packages.some(p => Math.abs(p.amount) >= 0.01));
   // Amazon's All Drivers reconciliation view returns COD-applicable rows, not
   // the entire active roster (verified live: GNTF has 16 rows / 25 roster entries).
   // A roster-count mismatch is therefore not evidence of a partial response.
@@ -41,7 +43,8 @@ export function reconciliationStatus(entries: DriverReconciliationEntry[]) {
 }
 export function prepareDepositStatus(summary: LiabilitySummary) {
   return { expectedAmount: requiredMoney(summary?.cashSummary?.expectedAmount), actualAmount: requiredMoney(summary?.cashSummary?.actualAmount),
-    variance: requiredMoney(summary?.cashSummary?.shortExcessAmount) };
+    variance: requiredMoney(summary?.cashSummary?.shortExcessAmount),
+    digitalAmount: summary?.mposSummary?.amount == null ? null : requiredMoney(summary.mposSummary.amount) };
 }
 export function remittanceStatus(entries: RemittanceEntry[], complete: boolean, today: string) {
   const rows = [...entries].sort((a,b) => b.lastUpdated - a.lastUpdated).map(entry => ({

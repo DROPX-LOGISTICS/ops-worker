@@ -23,7 +23,7 @@ test('completion uses COD-applicable portal rows, not the larger active driver r
  assert.equal(result.complete,true);assert.equal(result.driverCount,2);assert.equal(result.completedPercent,100);
 });
 test('prepare deposit retains expected actual and variance independently',()=>{
- assert.deepEqual(prepareDepositStatus({cashSummary:{expectedAmount:inr(0),actualAmount:inr(10),shortExcessAmount:inr(10)}}),{expectedAmount:0,actualAmount:10,variance:10});
+ assert.deepEqual(prepareDepositStatus({cashSummary:{expectedAmount:inr(0),actualAmount:inr(10),shortExcessAmount:inr(10)}}),{expectedAmount:0,actualAmount:10,variance:10,digitalAmount:null});
 });
 test('open remittances include both portal pending states',()=>{
  const result=remittanceStatus([remit('CREATED','2026-10-12T14:00Z'),{...remit('PENDING_SUBMISSION','2026-10-12T15:00Z'),remittanceId:'b'}],true,'2026-10-12');
@@ -44,10 +44,25 @@ test('retains collection time and separate transaction time without re-dating CO
  const d=driver('one',100);d.paymentInfo.overallPendingReconBreakdownList=[{trackingId:'TID',paymentMethod:'CASH',amount:inr(100),moneyCollectionTime:collected,transactionTime:updated}];
  const p=reconciliationStatus([d]).drivers[0].packages[0];assert.equal(p.collectedAt,collected);assert.equal(p.transactionAt,updated);
  delete d.paymentInfo.overallPendingReconBreakdownList[0].moneyCollectionTime;
- assert.equal(reconciliationStatus([d]).drivers[0].packages[0].collectedAt,null);
+ assert.equal(reconciliationStatus([d]).drivers[0].packages[0].collectedAt,updated);
+ assert.equal(reconciliationStatus([d]).drivers[0].packages[0].dateSource,'pending_transaction');
 });
 test('missing, invalid or future source timestamps remain unknown, never the refresh time',()=>{
  const now=Date.parse('2026-10-13T12:00:00Z');
  for(const value of [undefined,null,'',0,'bad',now+1,1577898000])assert.equal(codSourceTime(value,now),null);
  assert.equal(codSourceTime('1577898000000',now),1577898000000);
+});
+
+test('malformed monetary values never become verified zero',()=>{
+ for(const value of [null,undefined,'', ' ',true,false,[],{},'NaN',Infinity]) assert.throws(()=>requiredMoney(inr(value)));
+ assert.throws(()=>requiredMoney({value:20,unit:'USD'}));
+ assert.equal(requiredMoney(inr('0')),0);
+});
+test('digital liability is retained separately from physical cash',()=>{
+ const p=prepareDepositStatus({cashSummary:{expectedAmount:inr(167245.32),actualAmount:inr(167245.32),shortExcessAmount:inr(0)},mposSummary:{amount:inr(136338.78)}});
+ assert.equal(p.expectedAmount,167245.32);assert.equal(p.digitalAmount,136338.78);
+});
+test('offsetting TIDs cannot hide a pending driver behind a net zero',()=>{
+ const d=driver('one',0);d.paymentInfo.overallPendingReconBreakdownList=[{trackingId:'old',amount:inr(100)},{trackingId:'adjust',amount:inr(-100)}];
+ assert.equal(reconciliationStatus([d]).pendingCount,1);
 });

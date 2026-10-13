@@ -38,6 +38,13 @@ export function getBusinessDayRange(dateStr: string, startHourIst = 0): DateRang
   return { startTime, endTime };
 }
 
+/** Prepare Deposit reads all outstanding station liability, independent of the
+ * remittance-list date filter. Verified against SCC bankdeposits on 2026-10-13:
+ * LIABILITY_HISTORY_START_TIME = 0; endTime is the current IST day end. */
+export function getPrepareDepositRange(dateStr: string): DateRange {
+  return { startTime: 0, endTime: getBusinessDayRange(dateStr).endTime };
+}
+
 /** Portal bank-deposits `/getRemittance` lookback (~16 days). */
 export const REMITTANCE_LOOKBACK_DAYS = 16;
 
