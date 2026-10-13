@@ -488,9 +488,15 @@ export class AmazonLogisticsProvider implements StationDataProvider {
    * Search all outstanding history: a rolling date window can silently lose old cash. */
   async getOutstandingAssociateCash(stationCode: string, auth: AmazonAuthContext): Promise<AgeingPackageDetail[]> {
     const { resourcePath, processName, httpMethod } = AMAZON_RESOURCES.getAgeingDrillDownData;
+    // Match the established ageing export calendar window, including its
+    // timestamp pad. A live UTC-now cutoff dropped afternoon IST records:
+    // GDRD at 17:48 returned only updates through 12:18 from this source.
+    // These are current outstanding states, not future dated transactions.
+    const today = todayIstYmd();
+    const endTime = getIstCalendarRangeSeconds(today, addDaysYmd(today, 1)).endTime;
     const rows = await this.fetchAgeingStatusPages(resourcePath, processName, httpMethod,
       stationCode, 'Cash With Associate', [], [],
-      { startTime: 0, endTime: Math.floor(Date.now() / 1000) }, 1000, auth, true);
+      { startTime: 0, endTime }, 1000, auth, true);
     const unique = new Map<string, AgeingPackageDetail>();
     for (const row of rows) {
       if (!row.stationCode || !row.trackingId) throw new Error('SCC cash station or tracking ID unavailable');
@@ -524,6 +530,7 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     const out: AgeingPackageDetail[] = [];
     let startingIndex = 0;
     const maxPages = 50;
+    const pageSignatures = new Set<string>();
 
     for (let page = 0; page < maxPages; page++) {
       const data = await this.callProxy<
@@ -554,9 +561,15 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       if (requireComplete && !Array.isArray(data?.packageResultList)) throw new Error('SCC cash list unavailable');
       if (requireComplete && data.packageResultList!.some(row => row.receivableAmount == null || !['number','string'].includes(typeof row.receivableAmount) || String(row.receivableAmount).trim() === '' || !Number.isFinite(Number(row.receivableAmount)))) throw new Error('SCC cash amount unavailable');
       const batch = (data.packageResultList ?? []).map(normaliseAgeingPackage);
+      if (requireComplete && batch.length) {
+        const signature = JSON.stringify(batch.map(row => row.trackingId));
+        if (pageSignatures.has(signature)) throw new Error('SCC cash pagination incomplete: repeated page');
+        pageSignatures.add(signature);
+      }
       out.push(...batch);
-      // Full page → more rows may exist. Short/empty page → done.
-      if (batch.length < pageSize) return out;
+      // SCC can cap the returned page below the requested size. A short page
+      // alone cannot prove cash coverage; only an empty continuation can.
+      if (batch.length === 0 || (!requireComplete && batch.length < pageSize)) return out;
       startingIndex += batch.length;
     }
 

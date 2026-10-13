@@ -34,7 +34,7 @@ test('live SCC regression: full-history liability window retains GDRD 167245.32,
  assert.equal(h.calls.find(c=>c[0]==='liability')[2].startTime,0);
  assert.equal(h.calls.find(c=>c[0]==='liability')[2].endTime,dates.getBusinessDayRange(s.date).endTime);
  assert.ok(h.calls.find(c=>c[0]==='reconciliation')[2].startTime>0);
- assert.match(h.calls.find(c=>c[0]==='cache')[1],/cod-status:v5:GDRD/);
+ assert.match(h.calls.find(c=>c[0]==='cache')[1],/cod-status:v6:GDRD/);
  assert.equal(h.calls.find(c=>c[0]==='cache')[2],true);
  assert.equal(h.calls.find(c=>c[0]==='provider')[1],true);
  assert.equal(h.calls.find(c=>c[0]==='remittanceSource')[1],'primary');
