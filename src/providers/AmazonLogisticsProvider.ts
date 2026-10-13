@@ -484,6 +484,30 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     return [...byTrackingId.values()];
   }
 
+  /** Current SCC cash holders, independent of the active reconciliation roster.
+   * Search all outstanding history: a rolling date window can silently lose old cash. */
+  async getOutstandingAssociateCash(stationCode: string, auth: AmazonAuthContext): Promise<AgeingPackageDetail[]> {
+    const { resourcePath, processName, httpMethod } = AMAZON_RESOURCES.getAgeingDrillDownData;
+    const rows = await this.fetchAgeingStatusPages(resourcePath, processName, httpMethod,
+      stationCode, 'Cash With Associate', [], [],
+      { startTime: 0, endTime: Math.floor(Date.now() / 1000) }, 1000, auth, true);
+    const unique = new Map<string, AgeingPackageDetail>();
+    for (const row of rows) {
+      if (!row.stationCode || !row.trackingId) throw new Error('SCC cash station or tracking ID unavailable');
+      // Mother-station SCC includes XPT rows; each location has its own COD balance.
+      if (row.stationCode !== stationCode) continue;
+      if (!['CASH_IN_ASSOCIATE','CASH_WITH_ASSOCIATE'].includes((row.state ?? '').toUpperCase().replace(/\s+/g, '_'))) throw new Error('Unexpected SCC cash state');
+      const method = (row.actualPaymentMethod || row.paymentMethod).trim().toUpperCase();
+      if (!method) throw new Error('SCC cash payment method unavailable');
+      if (method !== 'CASH') continue;
+      if (row.receivableAmount < 0) throw new Error('SCC cash adjustment requires verification');
+      const previous = unique.get(row.trackingId);
+      if (previous && (previous.driverId !== row.driverId || previous.receivableAmount !== row.receivableAmount)) throw new Error('Conflicting SCC cash tracking records');
+      unique.set(row.trackingId, row);
+    }
+    return [...unique.values()];
+  }
+
   private async fetchAgeingStatusPages(
     resourcePath: string,
     processName: string,
@@ -495,6 +519,7 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     lastUpdatedRange: { startTime: number; endTime: number },
     pageSize: number,
     auth: AmazonAuthContext,
+    requireComplete = false,
   ): Promise<AgeingPackageDetail[]> {
     const out: AgeingPackageDetail[] = [];
     let startingIndex = 0;
@@ -526,13 +551,16 @@ export class AmazonLogisticsProvider implements StationDataProvider {
         { refererPath: '/station/dashboard/ageing', httpMethod },
       );
 
+      if (requireComplete && !Array.isArray(data?.packageResultList)) throw new Error('SCC cash list unavailable');
+      if (requireComplete && data.packageResultList!.some(row => row.receivableAmount == null || !['number','string'].includes(typeof row.receivableAmount) || String(row.receivableAmount).trim() === '' || !Number.isFinite(Number(row.receivableAmount)))) throw new Error('SCC cash amount unavailable');
       const batch = (data.packageResultList ?? []).map(normaliseAgeingPackage);
       out.push(...batch);
       // Full page → more rows may exist. Short/empty page → done.
-      if (batch.length < pageSize) break;
+      if (batch.length < pageSize) return out;
       startingIndex += batch.length;
     }
 
+    if (requireComplete) throw new Error('SCC cash pagination incomplete');
     return out;
   }
 

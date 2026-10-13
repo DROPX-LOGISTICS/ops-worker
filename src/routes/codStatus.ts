@@ -4,7 +4,9 @@ import { ValidationInputError } from '../errors';
 import { AmazonLogisticsProvider } from '../providers/AmazonLogisticsProvider';
 import { getBusinessDayRange, getPrepareDepositRange, getRemittancePortalFetchRange, todayIstYmd } from '../utils/dateRange';
 import { requireAmazonSessionOrThrow, respondCached } from './executiveAmazon';
-import { prepareDepositStatus, reconciliationStatus, remittanceStatus } from '../services/codStatus';
+import { prepareDepositStatus, remittanceStatus } from '../services/codStatus';
+import { reconciliationWithSccCash } from '../services/codCashCoverage';
+import { createWorkforceAssociateStore } from '../store/factory';
 
 /** Admin-only bridge. OpsPulse resolves the station from its authorized location/master;
  * unlike the legacy cron roster, the interactive view must allow master-added AMXL stations. */
@@ -13,7 +15,7 @@ export async function codStatusHandler(c: Context<{ Bindings: Env }>) {
   const stationCode = String(body.stationCode ?? '').trim().toUpperCase();
   if (!/^[A-Z0-9]{3,12}$/.test(stationCode)) throw new ValidationInputError('Valid station code required');
   const date = todayIstYmd();
-  return respondCached(c, `cod-status:v4:${stationCode}:${date}`, body.fresh === true, async () => {
+  return respondCached(c, `cod-status:v5:${stationCode}:${date}`, body.fresh === true, async () => {
     const session = await requireAmazonSessionOrThrow(c.env, `cod-status:${stationCode}`, stationCode);
     const provider = new AmazonLogisticsProvider(c.env.AMAZON_PROXY_BASE_URL, true);
     // Match the portal's current calendar date; the pending-reconciliation value itself is cumulative.
@@ -27,8 +29,18 @@ export async function codStatusHandler(c: Context<{ Bindings: Env }>) {
     }
     const [reconciliation, prepareDeposit, remittances] = await Promise.all([
       component('reconciliation', async () => {
-        const drivers = await provider.getActiveDrivers(stationCode, session.auth);
-        return reconciliationStatus(await provider.getDriverReconciliation(stationCode, range, drivers, session.auth));
+        const [drivers, cash] = await Promise.all([
+          provider.getActiveDrivers(stationCode, session.auth),
+          provider.getOutstandingAssociateCash(stationCode, session.auth),
+        ]);
+        const entries = await provider.getDriverReconciliation(stationCode, range, drivers, session.auth);
+        const known = new Set(entries.map(d => d.driverInfo.id));
+        const missingIds = [...new Set(cash.map(p => p.driverId).filter((id): id is string => !!id && !known.has(id)))];
+        // Name lookup is optional; cash remains visible by Driver ID if unavailable.
+        const roster = missingIds.length ? await createWorkforceAssociateStore(c.env).getByTransporterIds(missingIds).catch(() => new Map()) : new Map();
+        const names = new Map<string, string>();
+        for (const [id, person] of roster) if (person.fullName) names.set(id, person.fullName);
+        return reconciliationWithSccCash(entries, cash, names);
       }),
       component('prepareDeposit', async () => ({...prepareDepositStatus(await provider.getStationLiabilitySummary(stationCode, getPrepareDepositRange(date), session.auth)), sourceScope: 'outstanding_history', sourceWindow: getPrepareDepositRange(date)})),
       component('remittances', async () => {
