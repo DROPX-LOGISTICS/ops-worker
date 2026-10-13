@@ -17,7 +17,7 @@ function harness({failure,summary=cash(167245.32),fresh=false}={}) {
   async getActiveDrivers(){return [];}
   async getDriverReconciliation(station,range){calls.push(['reconciliation',station,range]);return [{driverInfo:{id:'DA',name:'DA'},paymentInfo:{overallPendingRecon:inr(0),overallPendingReconBreakdownList:[]}}];}
   async getStationLiabilitySummary(station,range){calls.push(['liability',station,range]);if(failure==='liability')throw Error('simulated source failure');return range.startTime===0?summary:cash(0);}
-  async getRemittances(station,range,auth,options){if(failure==='remittances')options.onSourceFailure();return [];}
+  async getRemittances(station,range,auth,options){calls.push(['remittanceSource',options.sources]);if(failure==='remittances')throw Error('simulated primary source failure');return [];}
  }
  const deps={'../errors':{ValidationInputError:Error},'../providers/AmazonLogisticsProvider':{AmazonLogisticsProvider:Provider},'../utils/dateRange':dates,'../services/codStatus':service,'./executiveAmazon':{
   requireAmazonSessionOrThrow:async()=>({auth:{}}),respondCached:async(c,key,force,read)=>{calls.push(['cache',key,force]);return read();}
@@ -32,9 +32,10 @@ test('live SCC regression: full-history liability window retains GDRD 167245.32,
  assert.equal(h.calls.find(c=>c[0]==='liability')[2].startTime,0);
  assert.equal(h.calls.find(c=>c[0]==='liability')[2].endTime,dates.getBusinessDayRange(s.date).endTime);
  assert.ok(h.calls.find(c=>c[0]==='reconciliation')[2].startTime>0);
- assert.match(h.calls.find(c=>c[0]==='cache')[1],/cod-status:v3:GDRD/);
+ assert.match(h.calls.find(c=>c[0]==='cache')[1],/cod-status:v4:GDRD/);
  assert.equal(h.calls.find(c=>c[0]==='cache')[2],true);
  assert.equal(h.calls.find(c=>c[0]==='provider')[1],true);
+ assert.equal(h.calls.find(c=>c[0]==='remittanceSource')[1],'primary');
 });
 test('one failed source does not manufacture zero or erase independent verified components',async()=>{
  const s=await harness({failure:'liability'}).run();
@@ -43,5 +44,5 @@ test('one failed source does not manufacture zero or erase independent verified 
 });
 test('malformed liability and incomplete remittance reads fail closed',async()=>{
  const s=await harness({summary:{cashSummary:{expectedAmount:inr(false)}}}).run();assert.equal(s.prepareDeposit.state,'unavailable');
- const m=await harness({failure:'remittances'}).run();assert.equal(m.remittances.data.complete,false);
+ const m=await harness({failure:'remittances'}).run();assert.equal(m.remittances.state,'unavailable');assert.equal(m.remittances.data,null);
 });

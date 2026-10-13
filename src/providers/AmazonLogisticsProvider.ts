@@ -556,7 +556,7 @@ export class AmazonLogisticsProvider implements StationDataProvider {
     auth: AmazonAuthContext,
     opts?: {
       lockPortalEndToRange?: boolean;
-      sources?: 'both' | 'primaryWithFallback';
+      sources?: 'both' | 'primaryWithFallback' | 'primary';
       onSourceFailure?: (source: 'v1' | 'legacy', reason: unknown) => void;
     },
   ): Promise<RemittanceEntry[]> {
@@ -614,6 +614,9 @@ export class AmazonLogisticsProvider implements StationDataProvider {
       }
       return remittanceRows(data).map(normaliseRemittance);
     };
+
+    // COD Status must agree with SCC: never mix shadow/legacy financial records.
+    if (opts?.sources === 'primary') return fetchV1();
 
     if (opts?.sources === 'primaryWithFallback') {
       // One call for subrequest-budget-sensitive callers (CIA): v1, and legacy
