@@ -9,6 +9,17 @@ account_id = "ab2dba58727809ae8bf0a21edb5fe7b8"
 # Free plan includes limited browser time; Paid unlocks higher limits.
 browser = { binding = "BROWSER" }
 
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 0.01
+
 # Do NOT set [limits].cpu_ms on Workers Free — deploy fails with code 100328.
 # After upgrading to Workers Paid, you can add:
 #   [limits]
