@@ -46,7 +46,23 @@ test('same code reused on another day stays a separate record', () => {
   assert.equal(mergeRemittanceSources([v1_AC651262], [nextDay]).length, 2);
 });
 
-test('different expected amounts are never paired', () => {
-  const other = { ...legacy_AC651262, expectedAmount: inr(44529.3) };
+test('different expected and actual amounts are never paired', () => {
+  const other = { ...legacy_AC651262, expectedAmount: inr(44529.3), actualAmount: inr(44530) };
   assert.equal(mergeRemittanceSources([v1_AC651262], [other]).length, 2);
+});
+
+test('records with no actual amount yet are not paired on that alone', () => {
+  const a = row({ remittanceId: 'PEUA:1', creationDate: 1790310486870, expectedAmount: inr(100) });
+  const b = row({ remittanceId: 'STATION-PEUA-2', creationDate: 1790310488000, expectedAmount: inr(200) });
+  assert.equal(mergeRemittanceSources([a], [b]).length, 2);
+});
+
+// Real QLDA data from 2026-10-13: the two endpoints disagreed on the expected
+// amount of a record carrying a variance.
+test('copies that disagree on expected amount but share the actual amount appear once', () => {
+  const v1 = row({ remittanceCode: 'AC690135', remittanceId: 'QLDA:1791301230000', creationDate: 1791301237015, submissionDate: 1791793488000, status: 'SUBMITTED', expectedAmount: inr(120444.93), actualAmount: inr(113869.98000000004) });
+  const legacy = row({ remittanceCode: 'AC690135', remittanceId: 'STATION-QLDA-1791301239000', creationDate: 1791301239000, submissionDate: 1791793490158, status: 'SUBMITTED', expectedAmount: inr(113870.93), actualAmount: inr(113869.98) });
+  const merged = mergeRemittanceSources([v1], [legacy]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].remittanceId, 'QLDA:1791301230000');
 });

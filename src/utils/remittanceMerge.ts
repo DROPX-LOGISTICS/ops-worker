@@ -11,12 +11,16 @@ import type { RemittanceEntry } from '../types';
  * amount and roughly the creation time - the ids differ
  * ("PEUA:1790219550000" vs "STATION-PEUA-1790219559000"), creationDate
  * differs by a few seconds, and actualAmount can differ while one side is
- * still pending (44197.0 vs 44197.68). So a pair is: identical expected
- * amount (to the paisa) and creation within SAME_RECORD_WINDOW_MS. Two real,
- * separate deposits with the same expected amount created within minutes of
- * each other at one station do not happen in practice; the same remittance
- * CODE is reused across days (one record per creation day), which this keeps
- * as separate records because their creation dates are days apart.
+ * still pending (44197.0 vs 44197.68). The expected amount can differ too
+ * once a record carries a variance: QLDA AC690135 on 2026-10-06 was expected
+ * 120444.93 in v1 but 113870.93 in legacy, both with actual 113869.98, and
+ * the unpaired copies made the code's total 113869.98 too high. So a pair is:
+ * creation within SAME_RECORD_WINDOW_MS and an identical expected OR actual
+ * amount (to the paisa). Two real, separate deposits sharing an amount and
+ * created within minutes of each other at one station do not happen in
+ * practice; the same remittance CODE is reused across days (one record per
+ * creation day), which this keeps as separate records because their creation
+ * dates are days apart.
  */
 export const SAME_RECORD_WINDOW_MS = 10 * 60 * 1000;
 
@@ -35,10 +39,11 @@ function paise(value: number | undefined): number {
 }
 
 function isSameRemittance(a: RemittanceEntry, b: RemittanceEntry): boolean {
-  return (
-    paise(a.expectedAmount?.value) === paise(b.expectedAmount?.value)
-    && Math.abs(Number(a.creationDate) - Number(b.creationDate)) <= SAME_RECORD_WINDOW_MS
-  );
+  if (Math.abs(Number(a.creationDate) - Number(b.creationDate)) > SAME_RECORD_WINDOW_MS) return false;
+  if (paise(a.expectedAmount?.value) === paise(b.expectedAmount?.value)) return true;
+  // A missing actual amount normalises to 0, which says nothing about identity.
+  const actual = paise(a.actualAmount?.value);
+  return actual !== 0 && actual === paise(b.actualAmount?.value);
 }
 
 /** The copy that is further along wins (tie -> `preferred`); its gaps are filled from the other. */
