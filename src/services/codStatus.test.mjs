@@ -5,7 +5,7 @@ import fs from 'node:fs';
 let source=fs.readFileSync(new URL('./codStatus.ts',import.meta.url),'utf8');
 source=source.replace("import { round2 } from '../utils/number';",'const round2 = n => Math.round(n * 100) / 100;').replace("import { todayIstYmd } from '../utils/dateRange';", "const todayIstYmd = ms => new Date(ms+19800000).toISOString().slice(0,10);");
 const js=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ES2022}}).outputText;
-const {requiredMoney,reconciliationStatus,prepareDepositStatus,remittanceStatus}=await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
+const {requiredMoney,reconciliationStatus,prepareDepositStatus,remittanceStatus,codSourceTime}=await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
 const inr=value=>({unit:'INR',value});
 const driver=(id,amount)=>({driverInfo:{id,name:id},paymentInfo:{overallPendingRecon:inr(amount),overallPendingReconBreakdownList:[]}});
 const remit=(status,updatedAt)=>({remittanceId:'a',remittanceCode:'AC1',status,lastUpdated:Date.parse(updatedAt),creationDate:Date.parse('2026-10-11T17:00:00Z'),submissionDate:null,expectedAmount:inr(500),actualAmount:inr(500),variance:inr(0)});
@@ -37,4 +37,17 @@ test('a prior deposit is not today; source failure and unknown statuses stay unv
 test('today is based on IST last update, not remittance creation',()=>{
  const result=remittanceStatus([remit('SUBMITTED','2026-10-11T20:00Z')],true,'2026-10-12');
  assert.equal(result.submittedToday,true);
+});
+
+test('retains collection time and separate transaction time without re-dating COD',()=>{
+ const collected=Date.parse('2020-01-01T17:00:00Z'),updated=Date.parse('2020-01-02T05:00:00Z');
+ const d=driver('one',100);d.paymentInfo.overallPendingReconBreakdownList=[{trackingId:'TID',paymentMethod:'CASH',amount:inr(100),moneyCollectionTime:collected,transactionTime:updated}];
+ const p=reconciliationStatus([d]).drivers[0].packages[0];assert.equal(p.collectedAt,collected);assert.equal(p.transactionAt,updated);
+ delete d.paymentInfo.overallPendingReconBreakdownList[0].moneyCollectionTime;
+ assert.equal(reconciliationStatus([d]).drivers[0].packages[0].collectedAt,null);
+});
+test('missing, invalid or future source timestamps remain unknown, never the refresh time',()=>{
+ const now=Date.parse('2026-10-13T12:00:00Z');
+ for(const value of [undefined,null,'',0,'bad',now+1,1577898000])assert.equal(codSourceTime(value,now),null);
+ assert.equal(codSourceTime('1577898000000',now),1577898000000);
 });

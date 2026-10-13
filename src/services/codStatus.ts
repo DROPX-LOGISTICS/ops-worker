@@ -7,6 +7,13 @@ export function requiredMoney(value: unknown): number {
   if (money?.value == null || money.value === '' || !Number.isFinite(Number(money.value)) || (money.unit && money.unit !== 'INR')) throw new Error('Amount unavailable');
   return round2(Number(money.value));
 }
+/** Portal collection and transaction timestamps are distinct. Never substitute a
+ * refresh timestamp (or transaction update) for the COD collection date. */
+export function codSourceTime(value: unknown, now = Date.now()): number | null {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= Date.UTC(2000, 0, 1) && n <= now ? n : null;
+}
 export function reconciliationStatus(entries: DriverReconciliationEntry[]) {
   if (!entries.length) throw new Error('No driver reconciliation data returned');
   const seen = new Set<string>();
@@ -18,6 +25,8 @@ export function reconciliationStatus(entries: DriverReconciliationEntry[]) {
       id, name: entry.driverInfo.name, pendingAmount: requiredMoney(entry.paymentInfo?.overallPendingRecon),
       packages: (entry.paymentInfo?.overallPendingReconBreakdownList ?? []).map(item => ({
         trackingId: item.trackingId, amount: requiredMoney(item.amount), paymentMethod: item.paymentMethod,
+        collectedAt: codSourceTime(item.moneyCollectionTime),
+        transactionAt: codSourceTime(item.transactionTime),
       })),
     };
   });

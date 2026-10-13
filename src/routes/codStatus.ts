@@ -13,7 +13,7 @@ export async function codStatusHandler(c: Context<{ Bindings: Env }>) {
   const stationCode = String(body.stationCode ?? '').trim().toUpperCase();
   if (!/^[A-Z0-9]{3,12}$/.test(stationCode)) throw new ValidationInputError('Valid station code required');
   const date = todayIstYmd();
-  return respondCached(c, `cod-status:v1:${stationCode}:${date}`, body.fresh === true, async () => {
+  return respondCached(c, `cod-status:v2:${stationCode}:${date}`, body.fresh === true, async () => {
     const session = await requireAmazonSessionOrThrow(c.env, `cod-status:${stationCode}`, stationCode);
     const provider = new AmazonLogisticsProvider(c.env.AMAZON_PROXY_BASE_URL, true);
     // Match the portal's current calendar date; the pending-reconciliation value itself is cumulative.
