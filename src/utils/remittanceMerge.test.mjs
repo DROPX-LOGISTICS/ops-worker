@@ -66,3 +66,28 @@ test('copies that disagree on expected amount but share the actual amount appear
   assert.equal(merged.length, 1);
   assert.equal(merged[0].remittanceId, 'QLDA:1791301230000');
 });
+
+// Real TLPA data from 2026-10-13: the copies were created 12m45s apart.
+test('copies created minutes apart in the two endpoints appear once', () => {
+  const v1 = [
+    row({ remittanceCode: 'AC691736', remittanceId: 'TLPA:1791647590000', creationDate: 1791647599360, submissionDate: 1791870115000, status: 'SUBMITTED', expectedAmount: inr(267994.37), actualAmount: inr(267993.42) }),
+    row({ remittanceCode: 'AC691736', remittanceId: 'TLPA:1791732760000', creationDate: 1791732760239, submissionDate: 1791870115000, status: 'SUBMITTED', expectedAmount: inr(70996.08), actualAmount: inr(70996.08) }),
+    row({ remittanceCode: 'AC691736', remittanceId: 'TLPA:1791820830000', creationDate: 1791820836024, submissionDate: 1791870115000, status: 'SUBMITTED', expectedAmount: inr(149004.5), actualAmount: inr(149004.5) }),
+  ];
+  const legacy = row({ remittanceCode: 'AC691736', remittanceId: 'STATION-TLPA-1791731995000', creationDate: 1791731995000, submissionDate: 1791870116376, status: 'SUBMITTED', expectedAmount: inr(70996.08), actualAmount: inr(70996.08) });
+  const merged = mergeRemittanceSources(v1, [legacy]);
+  assert.equal(merged.length, 3);
+  assert.equal(merged.reduce((sum, r) => sum + r.actualAmount.value, 0), 487994);
+});
+
+test('same amount under two different codes stays two records', () => {
+  const other = { ...legacy_AC651262, remittanceCode: 'AC999999' };
+  assert.equal(mergeRemittanceSources([v1_AC651262], [other]).length, 2);
+});
+
+test('a copy pairs with the closest record when several share its amount', () => {
+  const early = { ...v1_AC651262, remittanceId: 'PEUA:early', creationDate: legacy_AC651262.creationDate - 3 * 60 * 60 * 1000 };
+  const merged = mergeRemittanceSources([early, v1_AC651262], [legacy_AC651262]);
+  assert.equal(merged.length, 2);
+  assert.deepEqual(merged.map((r) => r.remittanceId), ['PEUA:early', 'PEUA:1790219550000']);
+});

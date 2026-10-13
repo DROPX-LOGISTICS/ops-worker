@@ -14,15 +14,18 @@ import type { RemittanceEntry } from '../types';
  * still pending (44197.0 vs 44197.68). The expected amount can differ too
  * once a record carries a variance: QLDA AC690135 on 2026-10-06 was expected
  * 120444.93 in v1 but 113870.93 in legacy, both with actual 113869.98, and
- * the unpaired copies made the code's total 113869.98 too high. So a pair is:
- * creation within SAME_RECORD_WINDOW_MS and an identical expected OR actual
- * amount (to the paisa). Two real, separate deposits sharing an amount and
- * created within minutes of each other at one station do not happen in
- * practice; the same remittance CODE is reused across days (one record per
- * creation day), which this keeps as separate records because their creation
- * dates are days apart.
+ * the unpaired copies made the code's total 113869.98 too high. The creation
+ * time is not always seconds apart either: TLPA AC691736 on 2026-10-11 was
+ * created 20:49:55 IST in legacy and 21:02:40 IST in v1, which a 10 minute
+ * window left unpaired and counted twice. So a pair is: creation within
+ * SAME_RECORD_WINDOW_MS, an identical expected OR actual amount (to the
+ * paisa), and no disagreement on the remittance code. Two real, separate
+ * deposits sharing an amount to the paisa within hours of each other at one
+ * station do not happen in practice; the same remittance CODE is reused
+ * across days (one record per creation day), which this keeps as separate
+ * records because their creation dates are a day apart.
  */
-export const SAME_RECORD_WINDOW_MS = 10 * 60 * 1000;
+export const SAME_RECORD_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 const STATUS_RANK: Record<string, number> = {
   SUBMITTED: 3,
@@ -38,8 +41,18 @@ function paise(value: number | undefined): number {
   return Math.round((Number(value) || 0) * 100);
 }
 
+function code(row: RemittanceEntry): string {
+  return String(row.remittanceCode ?? '').trim().toUpperCase();
+}
+
+function creationGap(a: RemittanceEntry, b: RemittanceEntry): number {
+  return Math.abs(Number(a.creationDate) - Number(b.creationDate));
+}
+
 function isSameRemittance(a: RemittanceEntry, b: RemittanceEntry): boolean {
-  if (Math.abs(Number(a.creationDate) - Number(b.creationDate)) > SAME_RECORD_WINDOW_MS) return false;
+  if (creationGap(a, b) > SAME_RECORD_WINDOW_MS) return false;
+  // A lagging copy has no code yet; two different codes are two remittances.
+  if (code(a) && code(b) && code(a) !== code(b)) return false;
   if (paise(a.expectedAmount?.value) === paise(b.expectedAmount?.value)) return true;
   // A missing actual amount normalises to 0, which says nothing about identity.
   const actual = paise(a.actualAmount?.value);
@@ -71,7 +84,13 @@ export function mergeRemittanceSources(
   const merged = [...primary];
   const paired = new Set<number>();
   for (const row of secondary) {
-    const index = merged.findIndex((candidate, i) => !paired.has(i) && i < primary.length && isSameRemittance(candidate, row));
+    // Closest creation time wins, so a wide window cannot pair the wrong day's record.
+    let index = -1;
+    for (let i = 0; i < primary.length; i += 1) {
+      const candidate = merged[i] as RemittanceEntry;
+      if (paired.has(i) || !isSameRemittance(candidate, row)) continue;
+      if (index === -1 || creationGap(candidate, row) < creationGap(merged[index] as RemittanceEntry, row)) index = i;
+    }
     if (index === -1) {
       merged.push(row);
       continue;
