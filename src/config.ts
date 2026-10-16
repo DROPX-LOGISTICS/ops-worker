@@ -17,12 +17,10 @@ export const DEFAULT_PORTAL_ACCOUNT = 'default';
  * Each maps to its own portal account_key (stored in amazon_portal_credentials).
  */
 export const STATION_PORTAL_ACCOUNT: Readonly<Record<string, string>> = {
-  GDRD: 'GDRD', GNTF: 'GNTF', GNTI: 'GNTI', GYMC: 'GYMC', JDBD: 'JDBD',
-  JUGD: 'JUGD', JUGF: 'JUGF', KANA: 'KANA', KBWE: 'KBWE', KDJG: 'KDJG',
-  KGQA: 'KGQA', KGQC: 'KGQC', KGQE: 'KGQE', KLZA: 'KLZA', KLZH: 'KLZH',
-  KOZA: 'KOZA', KTUB: 'KTUB', KTUO: 'KTUO', KTUR: 'KTUR', NLRC: 'NLRC',
-  NLRF: 'NLRF', PEUA: 'PEUA', QLDA: 'QLDA', TIRC: 'TIRC', TLPA: 'TLPA',
-  TLPB: 'TLPB', XAPH: 'XAPH', XAPI: 'XAPI', XAPL: 'XAPL', HBSC: 'HBSC',
+  KDJG: 'KDJG',
+  JUGF: 'JUGF',
+  KGQE: 'KGQE',
+  HBSC: 'HBSC',
 };
 
 /** Resolve which portal credential / session account to use for a station. */
