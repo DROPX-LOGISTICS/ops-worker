@@ -8,7 +8,7 @@ export const STATION_PORTAL_FALLBACK_ACCOUNTS: Readonly<Record<string, readonly 
   KGQA: ['fallback-KGQA-1'], KGQC: ['fallback-KGQC-1'], KGQE: ['fallback-KGQE-1'],
   KLZA: ['fallback-KLZA-1'], KLZH: ['fallback-KLZH-1'], KOZA: ['fallback-KOZA-1'],
   KTUB: ['fallback-KTUB-1'], KTUO: ['fallback-KTUO-1'], KTUR: ['fallback-KTUR-1'],
-  NLRC: ['fallback-NLRC-1', 'fallback-NLRC-2'], NLRF: ['fallback-NLRF-1', 'fallback-NLRF-2'],
+  NLRC: ['fallback-NLRC-1', 'fallback-NLRC-2'], NLRE: ['fallback-NLRE-1'], NLRF: ['fallback-NLRF-1', 'fallback-NLRF-2'],
   PEUA: ['fallback-PEUA-1'], QLDA: ['fallback-QLDA-1'], RPRN: ['fallback-RPRN-1'],
   SPBE: ['fallback-SPBE-1'], TIRC: ['fallback-TIRC-1'], TLPA: ['fallback-TLPA-1'],
   TLPB: ['fallback-TLPB-1'], XAPH: ['fallback-XAPH-1'], XAPI: ['fallback-XAPI-1'],
