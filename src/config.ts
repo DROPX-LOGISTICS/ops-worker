@@ -25,13 +25,13 @@ export const STATION_PORTAL_ACCOUNT: Readonly<Record<string, string>> = {
 
 /** Resolve which portal credential / session account to use for a station. */
 export function portalAccountKeyForStation(stationCode?: string | null): string {
-  const code = (stationCode ?? '').trim().toUpperCase();
-  if (!code) return DEFAULT_PORTAL_ACCOUNT;
-  return STATION_PORTAL_ACCOUNT[code] ?? DEFAULT_PORTAL_ACCOUNT;
+  void stationCode;
+  return DEFAULT_PORTAL_ACCOUNT;
 }
 
 export function isDedicatedPortalStation(stationCode?: string | null): boolean {
-  return portalAccountKeyForStation(stationCode) !== DEFAULT_PORTAL_ACCOUNT;
+  void stationCode;
+  return false;
 }
 
 /**

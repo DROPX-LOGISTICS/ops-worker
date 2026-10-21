@@ -1,5 +1,6 @@
 import type { Env, AmazonAuthContext, StoredCredential } from '../types';
-import { portalAccountKeyForStation, isDedicatedPortalStation } from '../config';
+import { DEFAULT_PORTAL_ACCOUNT, portalAccountKeyForStation } from '../config';
+import { portalFallbackAccountKeysForStation } from '../config/stationFallbackAccounts';
 import { createCredentialStore } from '../store/factory';
 import { PortalCredentialStore } from '../store/PortalCredentialStore';
 import { createNotifier } from '../notifications/factory';
@@ -89,7 +90,7 @@ export async function refreshAmazonSession(
     };
   }
 
-  const scrapeStation = isDedicatedPortalStation(opts.stationCode)
+  const scrapeStation = accountKey !== DEFAULT_PORTAL_ACCOUNT
     ? (creds.defaultStationCode || opts.stationCode || accountKey).trim().toUpperCase()
     : scrapeStationCode(env, creds.defaultStationCode);
   const triggeredBy = opts.triggeredBy || creds.email || 'auto-refresh';
@@ -103,6 +104,8 @@ export async function refreshAmazonSession(
 
     if (!result.ok) {
       await releaseAfterFailure(portalStore, result.error, accountKey);
+      const fallback = await tryStationFallback(env, opts, { ok: false, code: result.code, error: result.error, accountKey });
+      if (fallback.ok) return fallback;
       if (opts.notifyOnFailure !== false) {
         await notifyLoginFailure(env, result.error, result.code, scrapeStation, accountKey);
       }
@@ -118,6 +121,10 @@ export async function refreshAmazonSession(
     const message = (err as Error).message || 'Unknown login error';
     const quota = isBrowserQuotaError(message);
     await releaseAfterFailure(portalStore, message, accountKey);
+    const fallback = await tryStationFallback(env, opts, {
+      ok: false, code: quota ? 'BROWSER_QUOTA' : 'BROWSER_ERROR', error: message, accountKey,
+    });
+    if (fallback.ok) return fallback;
     if (opts.notifyOnFailure !== false) {
       await notifyLoginFailure(env, message, quota ? 'BROWSER_QUOTA' : 'BROWSER_ERROR', scrapeStation, accountKey);
     }
@@ -131,6 +138,18 @@ export async function refreshAmazonSession(
       accountKey,
     };
   }
+}
+
+async function tryStationFallback(
+  env: Env, opts: { triggeredBy?: string; notifyOnFailure?: boolean; stationCode?: string; accountKey?: string },
+  original: RefreshSessionResult,
+): Promise<RefreshSessionResult> {
+  if ((opts.accountKey ?? DEFAULT_PORTAL_ACCOUNT) !== DEFAULT_PORTAL_ACCOUNT || !opts.stationCode) return original;
+  for (const accountKey of portalFallbackAccountKeysForStation(opts.stationCode)) {
+    const fallback = await refreshAmazonSession(env, { ...opts, accountKey, notifyOnFailure: false });
+    if (fallback.ok) return fallback;
+  }
+  return original;
 }
 
 /**
